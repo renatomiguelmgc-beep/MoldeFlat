@@ -1,0 +1,36 @@
+{
+  "_comment": "Perfis de tapete de calibração. Cada perfil define o tamanho físico do tapete impresso e a posição real (em mm) do CENTRO de cada marcador ArUco nos 4 cantos. O app usa esses pontos como referência para calcular a correção de perspectiva e a escala real. Para adicionar um novo tamanho, copie um perfil, mude id/nome/width_mm/height_mm/margin_mm e rode 'node generate_mat.js <id>' para gerar o SVG de impressão.",
+  "dictionary": "ARUCO_MIP_36h12",
+  "profiles": [
+    {
+      "id": "padrao_1000x700",
+      "nome": "Padrão 100 x 70 cm",
+      "descricao": "Perfil inicial (provisório). Ajustar width_mm/height_mm quando o tamanho final do tapete for definido.",
+      "width_mm": 1000,
+      "height_mm": 700,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "markers": [
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
+      ]
+    },
+    {
+      "id": "tapete_500x1000",
+      "nome": "50 x 100 cm",
+      "descricao": "Tapete estreito e comprido, 50 x 100 cm.",
+      "width_mm": 500,
+      "height_mm": 1000,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "markers": [
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
+      ]
+    }
+  ]
+}

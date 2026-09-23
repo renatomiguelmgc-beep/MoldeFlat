@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Digitalizador de Moldes CNC</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <h1>Digitalizador de Moldes</h1>
+  <p class="subtitle">Foto do molde sobre o tapete de calibração → imagem corrigida (perspectiva + escala real)</p>
+</header>
+
+<main id="app">
+
+  <!-- Etapa 1: escolher o tapete -->
+  <section id="step-profile" class="step">
+    <h2>1. Tapete de calibração</h2>
+    <label for="profileSelect">Qual tapete você está usando?</label>
+    <select id="profileSelect"></select>
+    <p id="profileInfo" class="hint"></p>
+  </section>
+
+  <!-- Etapa 2: captura -->
+  <section id="step-capture" class="step">
+    <h2>2. Foto do molde</h2>
+    <p class="hint">
+      Posicione o molde sobre o tapete, com os 4 marcadores dos cantos visíveis e sem cobrir nenhum.
+      Fotografe de cima, o mais reto possível (perspectiva leve é corrigida automaticamente).
+    </p>
+
+    <div id="cameraWrap" class="camera-wrap hidden">
+      <video id="video" playsinline autoplay muted></video>
+      <div class="camera-actions">
+        <button id="btnShot" class="btn btn-primary">Capturar foto</button>
+        <button id="btnStopCamera" class="btn btn-ghost">Cancelar</button>
+      </div>
+    </div>
+
+    <div class="capture-actions">
+      <button id="btnOpenCamera" class="btn btn-primary">Abrir câmera</button>
+      <label class="btn btn-secondary file-btn">
+        Carregar foto
+        <input id="fileInput" type="file" accept="image/*" capture="environment" hidden />
+      </label>
+    </div>
+  </section>
+
+  <!-- Etapa 3: processamento -->
+  <section id="step-process" class="step hidden">
+    <h2>3. Processando</h2>
+    <div id="processStatus" class="status"></div>
+    <canvas id="sourceCanvas" class="hidden"></canvas>
+    <canvas id="detectCanvas" class="hidden"></canvas>
+  </section>
+
+  <!-- Etapa 4: resultado -->
+  <section id="step-result" class="step hidden">
+    <h2>4. Imagem corrigida</h2>
+    <div class="result-wrap">
+      <canvas id="resultCanvas"></canvas>
+    </div>
+    <p id="resultInfo" class="hint"></p>
+    <div class="result-actions">
+      <button id="btnDownload" class="btn btn-primary">Baixar imagem</button>
+      <button id="btnShare" class="btn btn-secondary hidden">Compartilhar</button>
+      <button id="btnRetry" class="btn btn-ghost">Nova foto</button>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
+</footer>
+
+<script src="lib/cv.js"></script>
+<script src="lib/aruco.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

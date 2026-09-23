@@ -1,0 +1,127 @@
+:root {
+  --bg: #0f1115;
+  --panel: #1a1d24;
+  --panel-2: #23272f;
+  --text: #eef0f3;
+  --muted: #9aa3af;
+  --accent: #3d8bfd;
+  --accent-2: #2563eb;
+  --danger: #e5534b;
+  --ok: #2ea043;
+  --radius: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  padding-bottom: 24px;
+}
+
+.topbar {
+  padding: 20px 16px 12px;
+  text-align: center;
+}
+.topbar h1 { margin: 0 0 4px; font-size: 1.35rem; }
+.subtitle { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+#app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.step {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.step h2 { margin: 0 0 10px; font-size: 1.05rem; }
+.step.hidden { display: none; }
+
+.hint { color: var(--muted); font-size: 0.85rem; line-height: 1.4; }
+
+select, input[type="file"] {
+  width: 100%;
+  font-size: 1rem;
+}
+
+#profileSelect {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #333;
+  background: var(--panel-2);
+  color: var(--text);
+  margin-top: 6px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 18px;
+  border-radius: 999px;
+  border: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.btn-primary { background: var(--accent-2); color: white; }
+.btn-primary:active { background: var(--accent); }
+.btn-secondary { background: var(--panel-2); color: var(--text); border: 1px solid #3a3f4a; }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid #3a3f4a; }
+.btn.hidden { display: none; }
+
+.capture-actions, .result-actions, .camera-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.file-btn { cursor: pointer; }
+
+.camera-wrap { margin-top: 14px; }
+.camera-wrap.hidden { display: none; }
+#video {
+  width: 100%;
+  border-radius: var(--radius);
+  background: #000;
+  max-height: 70vh;
+}
+
+.status {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 0.9rem;
+  min-height: 1.2em;
+}
+.status.status-error { color: var(--danger); }
+.status.status-ok { color: var(--ok); }
+
+.result-wrap {
+  width: 100%;
+  overflow: auto;
+  border-radius: var(--radius);
+  background: #000;
+}
+#resultCanvas { width: 100%; display: block; }
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin-top: 24px;
+}
+
+.hidden { display: none !important; }

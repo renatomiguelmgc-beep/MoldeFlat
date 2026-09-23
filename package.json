@@ -1,0 +1,16 @@
+{
+  "name": "digitalizador-moldes-cnc",
+  "version": "1.0.0",
+  "description": "App web (sem instalação, roda no navegador do celular) que fotografa um molde de peça de carro traçado em cartolina/papelão sobre um **tapete de calibração impresso**, e devolve uma imagem corrigida:",
+  "main": "generate_mat.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "sharp": "^0.35.4"
+  }
+}
