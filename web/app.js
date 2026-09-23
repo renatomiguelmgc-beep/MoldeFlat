@@ -7,6 +7,7 @@
 const DETECT_MAX_SIDE = 1400;   // downscale para detecção dos marcadores (velocidade)
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
+const MIN_MARKERS_REQUIRED = 4;  // mínimo de marcadores visíveis para calibrar (homografia por mínimos quadrados)
 
 let matConfig = null;      // conteúdo de mat-profiles.json
 let currentProfile = null; // perfil selecionado
@@ -62,7 +63,8 @@ function updateProfileInfo() {
   currentProfile = matConfig.profiles.find((p) => p.id === profileSelect.value);
   const p = currentProfile;
   profileInfo.textContent =
-    `${p.width_mm / 10} x ${p.height_mm / 10} cm · marcadores de ${p.marker_size_mm / 10} cm nos 4 cantos.` +
+    `${p.width_mm / 10} x ${p.height_mm / 10} cm · ${p.markers.length} marcadores de ${p.marker_size_mm / 10} cm · ` +
+    `precisa de pelo menos ${MIN_MARKERS_REQUIRED} visíveis para calibrar.` +
     (p.descricao ? ` ${p.descricao}` : "");
 }
 
@@ -70,14 +72,17 @@ function updateProfileInfo() {
  * Geometria do tapete (tem que espelhar generate_mat.js)
  * ------------------------------------------------------------------ */
 
-function cornerXY(corner, profile) {
+// Cada marcador do perfil tem posição real explícita (x_mm/y_mm, layout de
+// borda) ou um nome de canto (corner, layout antigo de 4 pontos) — suporta os dois.
+function markerRealXY(m, profile) {
+  if (m.x_mm != null) return { x: m.x_mm, y: m.y_mm };
   const { width_mm, height_mm, margin_mm } = profile;
-  switch (corner) {
+  switch (m.corner) {
     case "top-left": return { x: margin_mm, y: margin_mm };
     case "top-right": return { x: width_mm - margin_mm, y: margin_mm };
     case "bottom-right": return { x: width_mm - margin_mm, y: height_mm - margin_mm };
     case "bottom-left": return { x: margin_mm, y: height_mm - margin_mm };
-    default: throw new Error(`Canto desconhecido: ${corner}`);
+    default: throw new Error(`Canto desconhecido: ${m.corner}`);
   }
 }
 
@@ -193,19 +198,22 @@ async function processImage() {
   const found = new Map(); // id -> marker
   for (const m of markers) found.set(m.id, m);
 
-  const missing = currentProfile.markers.filter((m) => !found.has(m.id));
-  if (missing.length > 0) {
+  // Só precisamos de MIN_MARKERS_REQUIRED visíveis (não todos) — assim uma peça
+  // grande pode cobrir parte do tapete sem quebrar a calibração, desde que
+  // marcadores suficientes continuem visíveis em outros pontos da borda.
+  const usedMarkers = currentProfile.markers.filter((m) => found.has(m.id));
+  if (usedMarkers.length < MIN_MARKERS_REQUIRED) {
     setStatus(
-      `Só encontrei ${currentProfile.markers.length - missing.length} de ${currentProfile.markers.length} marcadores ` +
-      `(faltando ID ${missing.map((m) => m.id).join(", ")}). ` +
-      `Tente novamente com todos os 4 cantos do tapete visíveis, bem iluminados e sem reflexo.`,
+      `Só encontrei ${usedMarkers.length} de ${currentProfile.markers.length} marcadores ` +
+      `(preciso de pelo menos ${MIN_MARKERS_REQUIRED}). ` +
+      `Tente novamente com mais marcadores da borda visíveis, bem iluminados e sem reflexo.`,
       "error"
     );
     setProgress(0);
     return;
   }
 
-  setStatus("Marcadores encontrados. Calculando correção de perspectiva e escala...");
+  setStatus(`${usedMarkers.length} de ${currentProfile.markers.length} marcadores encontrados. Calculando correção de perspectiva e escala...`);
   setProgress(0.3);
   await nextFrame();
 
@@ -216,15 +224,18 @@ async function processImage() {
 
   const srcPts = [];
   const dstPts = [];
-  for (const m of currentProfile.markers) {
+  for (const m of usedMarkers) {
     const marker = found.get(m.id);
     const center = markerCenter(marker.corners);
     // volta pra escala da foto original (a detecção rodou numa cópia reduzida)
     srcPts.push({ x: center.x / scaleDetect, y: center.y / scaleDetect });
-    const mm = cornerXY(m.corner, currentProfile);
+    const mm = markerRealXY(m, currentProfile);
     dstPts.push({ x: mm.x * pxPerMm, y: mm.y * pxPerMm });
   }
 
+  // Com exatamente 4 pontos isso é um ajuste exato; com mais, é por mínimos
+  // quadrados (mais robusto a ruído de detecção e a marcadores individuais
+  // com posição ligeiramente imprecisa).
   const H = computeHomography(srcPts, dstPts);
   const Hinv = invert3x3(H);
 
@@ -232,7 +243,7 @@ async function processImage() {
   // Medimos o próprio marcador DEPOIS de corrigido e comparamos com esse valor —
   // se não bater, a suposição de geometria do tapete (ou a detecção) está errada,
   // e isso teria passado batido com um ajuste de só 4 pontos (sempre "perfeito").
-  const calibration = checkCalibrationQuality(H, currentProfile, found, scaleDetect, pxPerMm);
+  const calibration = checkCalibrationQuality(H, usedMarkers, found, scaleDetect, pxPerMm, currentProfile.marker_size_mm);
 
   setStatus("Gerando imagem corrigida (pode levar alguns segundos)...");
   await nextFrame();
@@ -292,16 +303,28 @@ function nextFrame() {
  * ------------------------------------------------------------------ */
 
 function computeHomography(src, dst) {
-  // Resolve h = [h11,h12,h13,h21,h22,h23,h31,h32] (h33 = 1) via DLT com 4 correspondências.
+  // Resolve h = [h11,h12,h13,h21,h22,h23,h31,h32] (h33 = 1) via DLT.
+  // Com exatamente 4 correspondências isso é um ajuste exato; com mais de 4
+  // (marcadores extras na borda), vira mínimos quadrados via equações normais
+  // (A^T A) h = A^T b — mais robusto a ruído de detecção em marcadores individuais.
   const A = [];
   const b = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < src.length; i++) {
     const { x, y } = src[i];
     const { x: X, y: Y } = dst[i];
     A.push([x, y, 1, 0, 0, 0, -x * X, -y * X]); b.push(X);
     A.push([0, 0, 0, x, y, 1, -x * Y, -y * Y]); b.push(Y);
   }
-  const h = solveLinear(A, b);
+  const n = 8;
+  const AtA = Array.from({ length: n }, () => Array(n).fill(0));
+  const Atb = Array(n).fill(0);
+  for (let r = 0; r < A.length; r++) {
+    for (let i = 0; i < n; i++) {
+      Atb[i] += A[r][i] * b[r];
+      for (let j = 0; j < n; j++) AtA[i][j] += A[r][i] * A[r][j];
+    }
+  }
+  const h = solveLinear(AtA, Atb);
   return [
     [h[0], h[1], h[2]],
     [h[3], h[4], h[5]],
@@ -358,17 +381,18 @@ function applyH(m, x, y) {
 // calcular a transformação, então dá pra usá-los como verificação independente:
 // cada marcador mede marker_size_mm de lado na vida real — comparamos com o que
 // ele mede depois de corrigido.
-function checkCalibrationQuality(H, profile, found, scaleDetect, pxPerMm) {
+function checkCalibrationQuality(H, markersToCheck, found, scaleDetect, pxPerMm, markerSizeMm) {
   // detect() traça o contorno do quadrado PRETO do marcador — a zona de silêncio
   // branca ao redor (parte do "tile" gerado por generateSVG) não é detectável
-  // contra o fundo branco do tapete. O tile inteiro tem (markSize+2) unidades de
-  // lado, e o quadrado preto tem markSize unidades — então o que a câmera
-  // realmente vê é marker_size_mm * markSize / (markSize + 2), não marker_size_mm.
+  // contra o fundo branco/preto do tapete (o tile em si sempre tem fundo branco
+  // próprio). O tile inteiro tem (markSize+2) unidades de lado, e o quadrado
+  // preto tem markSize unidades — então o que a câmera realmente vê é
+  // marker_size_mm * markSize / (markSize + 2), não marker_size_mm.
   const dict = new AR.Dictionary(matConfig.dictionary);
-  const detectableMm = (profile.marker_size_mm * dict.markSize) / (dict.markSize + 2);
+  const detectableMm = (markerSizeMm * dict.markSize) / (dict.markSize + 2);
 
   const results = [];
-  for (const m of profile.markers) {
+  for (const m of markersToCheck) {
     const marker = found.get(m.id);
     const corners = marker.corners.map((c) => ({ x: c.x / scaleDetect, y: c.y / scaleDetect }));
     const transformed = corners.map((c) => applyH(H, c.x, c.y));

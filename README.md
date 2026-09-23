@@ -1,8 +1,8 @@
-# Digitalizador de Moldes CNC
+# MoldeFlat — Digitalizador de Moldes CNC
 
-App web (sem instalação, roda no navegador do celular) que fotografa um molde de
-peça de carro traçado em cartolina/papelão sobre um **tapete de calibração
-impresso**, e devolve uma imagem corrigida:
+App web (instalável como app na tela inicial, sem loja de aplicativos) que
+fotografa um molde de peça de carro traçado em cartolina/papelão sobre um
+**tapete de calibração impresso**, e devolve uma imagem corrigida:
 
 - sem distorção de perspectiva (foto tirada em ângulo é "endireitada");
 - em escala real conhecida (o desenhista sabe exatamente o tamanho real de
@@ -11,20 +11,33 @@ impresso**, e devolve uma imagem corrigida:
 Todo o processamento roda **no navegador (client-side)**, sem backend, sem
 login, sem upload da foto para servidor nenhum.
 
+**Publicado em:** https://renatomiguelmgc-beep.github.io/MoldeFlat/
+(GitHub Pages, deploy automático a cada `git push` na branch `main` via
+GitHub Actions — ver `.github/workflows/pages.yml`).
+
 ## Como funciona
 
-1. Imprime-se um **tapete de calibração**: uma folha/lona com 4 marcadores
-   ArUco (padrões pretos e brancos, tipo QR code) nos 4 cantos, em posições
-   reais conhecidas (em mm).
-2. O molde é colocado sobre o tapete, com os 4 marcadores visíveis, e
-   fotografado (câmera do celular direto pelo navegador, ou foto tirada pelo
-   app nativo de câmera do celular e carregada no site).
-3. O app detecta os 4 marcadores na foto (biblioteca
+1. Imprime-se um **tapete de calibração**: uma folha/lona com vários
+   marcadores ArUco (padrões pretos e brancos, tipo QR code, cada um com um
+   ID único) distribuídos ao redor de toda a borda, em posições reais
+   conhecidas (em mm).
+2. O molde é colocado sobre o tapete e fotografado (câmera do celular direto
+   pelo navegador, ou foto tirada pelo app nativo de câmera do celular e
+   carregada no site). Não precisa ver todos os marcadores — **basta pelo
+   menos 4 visíveis**, então uma peça grande pode cobrir parte da borda sem
+   quebrar a calibração.
+3. O app detecta os marcadores visíveis na foto (biblioteca
    [js-aruco2](https://github.com/damianofalcioni/js-aruco2), 100% JavaScript,
    sem servidor), calcula a homografia (transformação de perspectiva) entre a
-   posição dos marcadores na foto e a posição real deles no tapete, e usa essa
-   transformação para "retificar" a foto inteira.
-4. O resultado é uma imagem onde o molde está sem distorção e em escala real
+   posição deles na foto e a posição real deles no tapete — por mínimos
+   quadrados quando há mais de 4 visíveis — e usa essa transformação para
+   "retificar" a foto inteira.
+4. **Autoverificação de calibração**: como cada marcador tem um tamanho real
+   conhecido, o app mede o próprio marcador depois de corrigido e compara.
+   Se o erro for grande, avisa antes de você confiar na imagem (isso pega
+   automaticamente casos como perfil de tapete errado selecionado, marcador
+   mal posicionado etc.).
+5. O resultado é uma imagem onde o molde está sem distorção e em escala real
    conhecida (uma régua de 100 mm é desenhada no rodapé da imagem para
    conferência). O desenhista baixa essa imagem e traça o contorno por cima no
    AutoCAD (vetorização automática do contorno fica para uma fase futura).
@@ -33,13 +46,22 @@ login, sem upload da foto para servidor nenhum.
 
 ```
 digitalizador-moldes-cnc/
-├── generate_mat.js          # gera o SVG de impressão do tapete (Node, zero deps)
-├── web/                     # o site em si (é só isso que precisa ser hospedado)
+├── generate_mat.js          # gera o SVG de impressão de um tapete (Node)
+├── build_profile.js         # calcula o layout de marcadores ao redor da borda
+│                             # e cria/atualiza um perfil em mat-profiles.json
+├── render_mat_png.js        # rasteriza o SVG do tapete em PNG (pra imprimir)
+├── make_icons.js            # gera os ícones do app (PWA)
+├── .github/workflows/pages.yml  # deploy automático pro GitHub Pages
+├── web/                     # o site em si (é só isso que é publicado)
 │   ├── index.html
 │   ├── style.css
 │   ├── app.js                # toda a lógica: câmera, detecção, homografia, warp
-│   ├── mat-profiles.json     # tamanhos de tapete disponíveis (ver abaixo)
-│   ├── mats/                 # SVGs gerados dos tapetes, prontos para plotar
+│   ├── manifest.json          # manifest do PWA (instalar na tela inicial)
+│   ├── sw.js                  # service worker mínimo (só pra ser instalável —
+│   │                           # não cacheia nada, sempre busca a versão mais nova)
+│   ├── icons/v2/               # ícones do app
+│   ├── mat-profiles.json     # tamanhos/layouts de tapete disponíveis (ver abaixo)
+│   ├── mats/                 # SVGs + PNGs gerados dos tapetes, prontos pra plotar
 │   └── lib/                  # js-aruco2 vendorizado (aruco.js + cv.js)
 └── README.md
 ```
@@ -54,52 +76,71 @@ python -m http.server 8080
 Abra `http://localhost:8080` no navegador do computador. **Importante:** a
 câmera (`getUserMedia`) só funciona em contexto seguro — `localhost` funciona
 para teste no computador, mas para usar no **celular** o site precisa estar em
-**HTTPS** (não funciona em `http://` puro nem acessando o IP da rede local sem
-certificado). O caminho mais simples é publicar a pasta `web/` em um hospedeiro
-estático gratuito com HTTPS automático (Netlify, Vercel, GitHub Pages, Cloudflare
-Pages) e abrir a URL publicada no celular. Posso ajudar a publicar quando
-quiser.
+**HTTPS**. O site publicado no GitHub Pages já resolve isso (é sempre HTTPS).
 
 Alternativa: mesmo sem câmera ao vivo, o botão **"Carregar foto"** sempre
-funciona (inclusive em `http://`), porque abre o app de câmera nativo do
-celular e só envia a foto já tirada — é o caminho recomendado, inclusive
-porque normalmente dá mais resolução/qualidade que a captura ao vivo pelo
-navegador.
+funciona, porque abre o seletor de arquivo/galeria (ou o app de câmera
+nativo) do celular e só envia a foto já tirada.
 
 ## Tapete de calibração
 
-O tamanho do tapete **ainda não foi definido** — o projeto está pronto para
-qualquer tamanho, é só configurar. O perfil inicial em
-`web/mat-profiles.json` (`padrao_1000x700`, 100 x 70 cm, provisório) existe
-para o app funcionar desde já.
+Hoje existem dois esquemas de tapete, ambos no mesmo `mat-profiles.json`,
+selecionáveis no app:
 
-### Gerando o arquivo de impressão
+- **4 cantos** (`corner`: `top-left`/`top-right`/`bottom-right`/`bottom-left`)
+  — esquema original, 4 marcadores só nos cantos. Todos precisam estar
+  visíveis.
+- **Borda toda** (`x_mm`/`y_mm` explícitos por marcador) — vários marcadores
+  distribuídos ao redor de todo o perímetro. Só precisa de 4 visíveis (não
+  precisam ser os cantos), então tolera peças grandes cobrindo parte do
+  tapete. É o esquema recomendado para tapetes novos.
+
+Perfis também podem ter `"background": "black"` para tapete de fundo preto
+(cada marcador continua com fundo branco próprio — é isso que garante que
+ele continua detectável mesmo num tapete preto).
+
+### Criando um tapete novo (esquema borda, recomendado)
 
 ```bash
-node generate_mat.js padrao_1000x700
+node build_profile.js <profileId> "<nome>" <width_mm> <height_mm> <margin_mm> <marker_size_mm> <spacing_mm> [black]
+node generate_mat.js <profileId>
+node render_mat_png.js <profileId> 150
 ```
 
-Gera `web/mats/padrao_1000x700.svg`. O SVG usa unidades físicas em mm — ao
-abrir em software vetorial (Illustrator, CorelDraw, Inkscape) ou mandar
-plotar/imprimir, **usar escala 100% (não ajustar à página)**, senão a escala
-real calculada pelo app fica errada.
+Exemplo (tapete 50x100cm, fundo preto, marcador a cada ~200mm de borda):
 
-### Adicionando um novo tamanho
+```bash
+node build_profile.js tapete_500x1000_borda "50 x 100 cm (borda)" 500 1000 80 100 200 black
+node generate_mat.js tapete_500x1000_borda
+```
 
-Edite `web/mat-profiles.json` e adicione um novo objeto em `"profiles"`,
-copiando a estrutura do `padrao_1000x700` e mudando `id`, `nome`, `width_mm`,
-`height_mm` (e `margin_mm`/`marker_size_mm` se quiser marcadores maiores/
-menores — tapetes muito grandes pedem marcadores maiores para serem
-detectados de longe). Depois rode `node generate_mat.js <novo_id>` para gerar
-o SVG. Não precisa mexer em nenhum outro arquivo — o app lê os perfis
-disponíveis direto do JSON e mostra num seletor na tela.
+`build_profile.js` calcula quantos marcadores cabem em cada lado (respeitando
+o espaçamento pedido), gera um ID único pra cada um e grava tudo em
+`mat-profiles.json` — não precisa editar o JSON à mão. `generate_mat.js` lê
+esse perfil e desenha o SVG (funciona tanto pra esse esquema quanto pro
+esquema antigo de 4 cantos).
 
-**Ideia para múltiplos tamanhos:** como os 4 marcadores de cada perfil têm
-IDs fixos (0, 1, 2, 3, sempre nos cantos), o app precisa saber qual perfil
-está em uso — por isso hoje é um seletor manual na tela 1. Se no futuro
-quiser detecção automática do tamanho do tapete, dá pra usar IDs de
-marcador diferentes por tamanho (ex.: tapete P usa IDs 0-3, tapete G usa IDs
-4-7) e o app identifica sozinho qual tapete está sendo fotografado.
+O SVG usa unidades físicas em mm — ao abrir em software vetorial
+(Illustrator, CorelDraw, Inkscape) ou mandar plotar/imprimir, **usar escala
+100% (não ajustar à página)**, senão a escala real calculada pelo app fica
+errada.
+
+### Criando um tapete só com 4 cantos (esquema antigo)
+
+Copie um perfil existente com `corner` em `mat-profiles.json`, mude
+`id`/`nome`/`width_mm`/`height_mm`/`margin_mm`, rode
+`node generate_mat.js <id>`.
+
+## Calibração: se a escala sair errada
+
+Se as peças digitalizadas saírem consistentemente maiores/menores que o
+real, o problema quase sempre é que a distância real entre os marcadores no
+tapete físico não bate com `width_mm`/`height_mm`/`margin_mm` no perfil
+(impressão que não saiu em escala 100%, marcador colado fora do lugar
+etc.). O app já avisa isso automaticamente (autoverificação de calibração,
+acima) — mas pra corrigir de vez, meça com trena a distância real entre dois
+marcadores adjacentes no tapete físico e ajuste o perfil pra bater com a
+mesa real, não com o arquivo original.
 
 ## Limitações da v1 (por decisão, não por esquecimento)
 
@@ -111,14 +152,23 @@ marcador diferentes por tamanho (ex.: tapete P usa IDs 0-3, tapete G usa IDs
 - **Sem histórico/persistência**: cada foto é processada e baixada na hora,
   nada fica salvo (nem localmente, nem em servidor). Sem login, sem lista de
   projetos.
-- **Tamanho do tapete provisório**: ver seção acima.
 
 ## Testes
 
-O pipeline (detecção de marcador → homografia → correção de perspectiva e
-escala) foi validado com uma foto sintética gerada com distorção de
-perspectiva conhecida e um "molde" de tamanho real conhecido (retângulo de
-300 x 200 mm): o resultado corrigido bateu com o tamanho e a posição
-esperados (diferença de poucos pixels, compatível com a espessura do traço
-desenhado). Ainda não foi testado com fotos reais de celular — vale validar
-com o tapete impresso assim que o tamanho for definido.
+O pipeline completo (detecção de marcador → homografia por mínimos
+quadrados → correção de perspectiva e escala → autoverificação) foi validado
+com fotos sintéticas geradas com distorção de perspectiva conhecida e um
+"molde" de tamanho real conhecido:
+
+- Esquema de 4 cantos: resultado bateu com o esperado (diferença de poucos
+  pixels, compatível com a espessura do traço desenhado).
+- Esquema de borda com **oclusão simulada** (4 de 14 marcadores cobertos por
+  um "molde" propositalmente grande): calibração confirmada com ~1.4% de
+  erro, resultado bateu com o tamanho real esperado (728×1689px medidos vs.
+  720×1680px esperados) — confirma que a tolerância a oclusão parcial
+  funciona sem perda de precisão.
+
+Também testado com fotos reais de celular; um caso de escala incorreta foi
+investigado e determinado como causado por diferença entre o tapete físico
+(marcadores impressos separadamente e colados à mão) e o arquivo original —
+ver histórico de commits e conversa do projeto para detalhes.

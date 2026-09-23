@@ -30,7 +30,7 @@
         text-anchor="middle" fill="#999">ID 3</text>
   
   
-  <g transform="translate(144.4 906.8) scale(0.0515625)">
+  <g transform="translate(235 464) scale(0.05859375)">
     <rect x="0" y="0" width="512" height="512" rx="96" fill="#2563eb"/>
     <g stroke="#ffffff" stroke-width="26" stroke-linecap="round" fill="none">
       <path d="M 96 170 L 96 96 L 170 96"/>
@@ -40,12 +40,11 @@
     </g>
     <rect x="196" y="196" width="120" height="120" rx="14" fill="none" stroke="#ffffff" stroke-width="16"/>
   </g>
-  <text x="176.8" y="923.78" font-family="Arial" font-weight="bold"
-        font-size="10.799999999999999" fill="#333">MoldeFlat</text>
-
-  <text x="355.6" y="915.2" font-family="Arial" font-weight="bold"
-        font-size="12" text-anchor="end" fill="#333">500 x 1000 mm</text>
-  <text x="355.6" y="928.8" font-family="Arial"
-        font-size="4.8" text-anchor="end" fill="#999">escala 100%</text>
+  <text x="250" y="505.2" font-family="Arial" font-weight="bold"
+        font-size="14" text-anchor="middle" fill="#333">MoldeFlat</text>
+  <text x="250" y="520.8" font-family="Arial" font-weight="bold"
+        font-size="12" text-anchor="middle" fill="#333">500 x 1000 mm</text>
+  <text x="250" y="532" font-family="Arial"
+        font-size="7" text-anchor="middle" fill="#999">imprimir em escala 100%</text>
 
 </svg>

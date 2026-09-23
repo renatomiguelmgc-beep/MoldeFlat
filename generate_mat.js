@@ -40,7 +40,10 @@ function cornerXY(corner, profile) {
   }
 }
 
-function markerGroup(markerId, center, markerSizeMm) {
+function markerGroup(markerId, center, markerSizeMm, isBlack) {
+  // O tile gerado já vem com fundo branco embutido (zona de silêncio necessária
+  // pra detecção) — isso continua funcionando igual num tapete de fundo preto,
+  // porque cada marcador é uma "ilha" branca por cima do preto, não o preto direto.
   const svg = dictionary.generateSVG(markerId);
   const viewBoxMatch = svg.match(/viewBox="0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)"/);
   if (!viewBoxMatch) throw new Error("Não foi possível ler o viewBox do marcador gerado.");
@@ -54,15 +57,18 @@ function markerGroup(markerId, center, markerSizeMm) {
     ${inner}
   </g>
   <text x="${center.x}" y="${center.y + markerSizeMm / 2 + 10}" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#999">ID ${markerId}</text>`;
+        text-anchor="middle" fill="${isBlack ? "#888" : "#999"}">ID ${markerId}</text>`;
 }
 
 const { width_mm, height_mm, marker_size_mm, markers } = profile;
+const isBlack = profile.background === "black";
 
 let markerGroups = "";
 for (const m of markers) {
-  const center = cornerXY(m.corner, profile);
-  markerGroups += markerGroup(m.id, center, marker_size_mm);
+  // marcador pode ter posição explícita (x_mm/y_mm, layout de borda) ou um
+  // nome de canto (corner, layout antigo de 4 pontos) — suporta os dois.
+  const center = (m.x_mm != null) ? { x: m.x_mm, y: m.y_mm } : cornerXY(m.corner, profile);
+  markerGroups += markerGroup(m.id, center, marker_size_mm, isBlack);
 }
 
 // Logo do MoldeFlat (mesmo desenho do ícone do app: cantos de mira + quadrado central),
@@ -82,34 +88,34 @@ function moldeFlatLogo(x, y, sizeMm) {
   </g>`;
 }
 
-// Espaço livre entre os marcadores de baixo, pra encaixar logo (esquerda) e
-// tamanho do tapete (direita) sem sobrepor os marcadores nem um ao outro.
-// Tudo é dimensionado como fração do espaço livre, pra caber até no menor tapete.
+// Marca d'água no CENTRO do tapete — sempre livre de marcadores, não importa
+// quantos ou onde estejam distribuídos na borda (e é onde o molde cobre
+// durante o uso de qualquer forma, então não atrapalha a calibração nunca).
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+const shortSide = Math.min(width_mm, height_mm);
 
-const bottomMarkerCenterY = height_mm - profile.margin_mm;
-const leftMarkerRightEdge = profile.margin_mm + marker_size_mm / 2;
-const rightMarkerLeftEdge = width_mm - profile.margin_mm - marker_size_mm / 2;
-const freeWidth = rightMarkerLeftEdge - leftMarkerRightEdge;
+const logoSizeMm = clamp(shortSide * 0.06, 14, 36);
+const nameFontSize = clamp(shortSide * 0.028, 9, 16);
+const sizeFontSize = clamp(shortSide * 0.024, 8, 13);
+const subFontSize = clamp(shortSide * 0.014, 5, 7);
 
-const gutter = clamp(freeWidth * 0.06, 8, 20);
-const logoSizeMm = clamp(freeWidth * 0.11, 12, 30);
-const nameFontSize = clamp(freeWidth * 0.045, 8, 15);
-const sizeFontSize = clamp(freeWidth * 0.05, 9, 16);
-const subFontSize = clamp(freeWidth * 0.02, 4, 6.5);
+const cx = width_mm / 2;
+const cy = height_mm / 2;
+const gap = 6;
 
-const logoX = leftMarkerRightEdge + gutter;
-const logoY = bottomMarkerCenterY - logoSizeMm / 2;
+const nameColor = isBlack ? "#f2f2f2" : "#333";
+const subColor = isBlack ? "#aaaaaa" : "#999";
+const bgFill = isBlack ? "#0a0a0a" : "white";
+const borderStroke = isBlack ? "#555555" : "#cccccc";
 
 const footerBlocks = `
-  ${moldeFlatLogo(logoX, logoY, logoSizeMm)}
-  <text x="${logoX + logoSizeMm + 6}" y="${bottomMarkerCenterY + nameFontSize * 0.35}" font-family="Arial" font-weight="bold"
-        font-size="${nameFontSize}" fill="#333">MoldeFlat</text>
-
-  <text x="${rightMarkerLeftEdge - gutter}" y="${bottomMarkerCenterY - subFontSize}" font-family="Arial" font-weight="bold"
-        font-size="${sizeFontSize}" text-anchor="end" fill="#333">${width_mm} x ${height_mm} mm</text>
-  <text x="${rightMarkerLeftEdge - gutter}" y="${bottomMarkerCenterY + subFontSize + 4}" font-family="Arial"
-        font-size="${subFontSize}" text-anchor="end" fill="#999">escala 100%</text>
+  ${moldeFlatLogo(cx - logoSizeMm / 2, cy - logoSizeMm - gap, logoSizeMm)}
+  <text x="${cx}" y="${cy - gap + nameFontSize * 0.8}" font-family="Arial" font-weight="bold"
+        font-size="${nameFontSize}" text-anchor="middle" fill="${nameColor}">MoldeFlat</text>
+  <text x="${cx}" y="${cy - gap + nameFontSize * 0.8 + sizeFontSize * 1.3}" font-family="Arial" font-weight="bold"
+        font-size="${sizeFontSize}" text-anchor="middle" fill="${nameColor}">${width_mm} x ${height_mm} mm</text>
+  <text x="${cx}" y="${cy - gap + nameFontSize * 0.8 + sizeFontSize * 1.3 + subFontSize * 1.6}" font-family="Arial"
+        font-size="${subFontSize}" text-anchor="middle" fill="${subColor}">imprimir em escala 100%</text>
 `;
 
 const svgDoc = `<?xml version="1.0" encoding="UTF-8"?>
@@ -118,9 +124,9 @@ const svgDoc = `<?xml version="1.0" encoding="UTF-8"?>
      Dimensões reais: ${width_mm} x ${height_mm} mm. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="${width_mm}mm" height="${height_mm}mm"
      viewBox="0 0 ${width_mm} ${height_mm}">
-  <rect x="0" y="0" width="${width_mm}" height="${height_mm}" fill="white" />
+  <rect x="0" y="0" width="${width_mm}" height="${height_mm}" fill="${bgFill}" />
   <rect x="1" y="1" width="${width_mm - 2}" height="${height_mm - 2}" fill="none"
-        stroke="#cccccc" stroke-width="1" stroke-dasharray="6 4" />
+        stroke="${borderStroke}" stroke-width="1" stroke-dasharray="6 4" />
   ${markerGroups}
   ${footerBlocks}
 </svg>

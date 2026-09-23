@@ -11,10 +11,22 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
+        {
+          "id": 0,
+          "corner": "top-left"
+        },
+        {
+          "id": 1,
+          "corner": "top-right"
+        },
+        {
+          "id": 2,
+          "corner": "bottom-right"
+        },
+        {
+          "id": 3,
+          "corner": "bottom-left"
+        }
       ]
     },
     {
@@ -26,10 +38,22 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
+        {
+          "id": 0,
+          "corner": "top-left"
+        },
+        {
+          "id": 1,
+          "corner": "top-right"
+        },
+        {
+          "id": 2,
+          "corner": "bottom-right"
+        },
+        {
+          "id": 3,
+          "corner": "bottom-left"
+        }
       ]
     },
     {
@@ -41,10 +65,104 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
+        {
+          "id": 0,
+          "corner": "top-left"
+        },
+        {
+          "id": 1,
+          "corner": "top-right"
+        },
+        {
+          "id": 2,
+          "corner": "bottom-right"
+        },
+        {
+          "id": 3,
+          "corner": "bottom-left"
+        }
+      ]
+    },
+    {
+      "id": "tapete_500x1000_borda",
+      "nome": "50 x 100 cm (borda)",
+      "descricao": "Marcadores distribuídos ao redor de toda a borda (14 no total), não só nos 4 cantos — robusto a oclusão parcial (basta ~4 visíveis pra calibrar). Fundo preto.",
+      "width_mm": 500,
+      "height_mm": 1000,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "background": "black",
+      "markers": [
+        {
+          "id": 0,
+          "x_mm": 80,
+          "y_mm": 80
+        },
+        {
+          "id": 1,
+          "x_mm": 250,
+          "y_mm": 80
+        },
+        {
+          "id": 2,
+          "x_mm": 420,
+          "y_mm": 80
+        },
+        {
+          "id": 3,
+          "x_mm": 420,
+          "y_mm": 248
+        },
+        {
+          "id": 4,
+          "x_mm": 420,
+          "y_mm": 416
+        },
+        {
+          "id": 5,
+          "x_mm": 420,
+          "y_mm": 584
+        },
+        {
+          "id": 6,
+          "x_mm": 420,
+          "y_mm": 752
+        },
+        {
+          "id": 7,
+          "x_mm": 420,
+          "y_mm": 920
+        },
+        {
+          "id": 8,
+          "x_mm": 250,
+          "y_mm": 920
+        },
+        {
+          "id": 9,
+          "x_mm": 80,
+          "y_mm": 920
+        },
+        {
+          "id": 10,
+          "x_mm": 80,
+          "y_mm": 752
+        },
+        {
+          "id": 11,
+          "x_mm": 80,
+          "y_mm": 584
+        },
+        {
+          "id": 12,
+          "x_mm": 80,
+          "y_mm": 416
+        },
+        {
+          "id": 13,
+          "x_mm": 80,
+          "y_mm": 248
+        }
       ]
     }
   ]

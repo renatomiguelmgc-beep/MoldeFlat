@@ -30,7 +30,7 @@
         text-anchor="middle" fill="#999">ID 3</text>
   
   
-  <g transform="translate(150 1405) scale(0.05859375)">
+  <g transform="translate(482 708) scale(0.0703125)">
     <rect x="0" y="0" width="512" height="512" rx="96" fill="#2563eb"/>
     <g stroke="#ffffff" stroke-width="26" stroke-linecap="round" fill="none">
       <path d="M 96 170 L 96 96 L 170 96"/>
@@ -40,12 +40,11 @@
     </g>
     <rect x="196" y="196" width="120" height="120" rx="14" fill="none" stroke="#ffffff" stroke-width="16"/>
   </g>
-  <text x="186" y="1425.25" font-family="Arial" font-weight="bold"
-        font-size="15" fill="#333">MoldeFlat</text>
-
-  <text x="850" y="1413.5" font-family="Arial" font-weight="bold"
-        font-size="16" text-anchor="end" fill="#333">1000 x 1500 mm</text>
-  <text x="850" y="1430.5" font-family="Arial"
-        font-size="6.5" text-anchor="end" fill="#999">escala 100%</text>
+  <text x="500" y="756.8" font-family="Arial" font-weight="bold"
+        font-size="16" text-anchor="middle" fill="#333">MoldeFlat</text>
+  <text x="500" y="773.6999999999999" font-family="Arial" font-weight="bold"
+        font-size="13" text-anchor="middle" fill="#333">1000 x 1500 mm</text>
+  <text x="500" y="784.9" font-family="Arial"
+        font-size="7" text-anchor="middle" fill="#999">imprimir em escala 100%</text>
 
 </svg>
