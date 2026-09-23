@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Tapete de calibração "50 x 100 cm (borda)" (perfil "tapete_500x1000_borda").
+<!-- Tapete de calibração "50 x 100 cm (preto)" (perfil "tapete_500x1000_borda").
      IMPRIMIR/PLOTAR EM ESCALA 100% - NÃO AJUSTAR À PÁGINA.
      Dimensões reais: 500 x 1000 mm. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="500mm" height="1000mm"
@@ -13,71 +13,21 @@
   </g>
   <text x="80" y="140" font-family="Arial" font-size="7"
         text-anchor="middle" fill="#888">ID 0</text>
-  <g transform="translate(200 30) scale(10)">
+  <g transform="translate(370 30) scale(10)">
     <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="3" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="5" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="6" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
   </g>
-  <text x="250" y="140" font-family="Arial" font-size="7"
+  <text x="420" y="140" font-family="Arial" font-size="7"
         text-anchor="middle" fill="#888">ID 1</text>
-  <g transform="translate(370 30) scale(10)">
+  <g transform="translate(370 870) scale(10)">
     <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="7" y="4" width="1" height="1" fill="white"/><rect x="2" y="5" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/>
   </g>
-  <text x="420" y="140" font-family="Arial" font-size="7"
+  <text x="420" y="980" font-family="Arial" font-size="7"
         text-anchor="middle" fill="#888">ID 2</text>
-  <g transform="translate(370 198) scale(10)">
+  <g transform="translate(30 870) scale(10)">
     <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="3" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="3" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="7" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="6" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/>
   </g>
-  <text x="420" y="308" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 3</text>
-  <g transform="translate(370 366) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="3" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="7" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="420" y="476" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 4</text>
-  <g transform="translate(370 534) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="6" y="3" width="1" height="1" fill="white"/><rect x="5" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="2" y="5" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="6" y="6" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="420" y="644" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 5</text>
-  <g transform="translate(370 702) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="3" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="3" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="6" y="3" width="1" height="1" fill="white"/><rect x="7" y="3" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="5" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="420" y="812" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 6</text>
-  <g transform="translate(370 870) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="3" y="2" width="1" height="1" fill="white"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="7" y="4" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="420" y="980" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 7</text>
-  <g transform="translate(200 870) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="5" y="4" width="1" height="1" fill="white"/><rect x="2" y="5" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="5" y="6" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="250" y="980" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 8</text>
-  <g transform="translate(30 870) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="6" y="3" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="7" y="4" width="1" height="1" fill="white"/><rect x="2" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="6" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/>
-  </g>
   <text x="80" y="980" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 9</text>
-  <g transform="translate(30 702) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="3" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="6" y="4" width="1" height="1" fill="white"/><rect x="2" y="5" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="5" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="80" y="812" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 10</text>
-  <g transform="translate(30 534) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="6" y="3" width="1" height="1" fill="white"/><rect x="7" y="3" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="5" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="7" y="6" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="80" y="644" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 11</text>
-  <g transform="translate(30 366) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="2" y="2" width="1" height="1" fill="white"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="5" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="4" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="7" y="4" width="1" height="1" fill="white"/><rect x="4" y="5" width="1" height="1" fill="white"/><rect x="7" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="3" y="6" width="1" height="1" fill="white"/><rect x="4" y="6" width="1" height="1" fill="white"/><rect x="5" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="5" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="80" y="476" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 12</text>
-  <g transform="translate(30 198) scale(10)">
-    <rect x="0" y="0" width="10" height="10" fill="white"/><rect x="1" y="1" width="8" height="8" fill="black"/><rect x="4" y="2" width="1" height="1" fill="white"/><rect x="6" y="2" width="1" height="1" fill="white"/><rect x="7" y="2" width="1" height="1" fill="white"/><rect x="2" y="3" width="1" height="1" fill="white"/><rect x="5" y="3" width="1" height="1" fill="white"/><rect x="2" y="4" width="1" height="1" fill="white"/><rect x="3" y="4" width="1" height="1" fill="white"/><rect x="4" y="4" width="1" height="1" fill="white"/><rect x="3" y="5" width="1" height="1" fill="white"/><rect x="6" y="5" width="1" height="1" fill="white"/><rect x="2" y="6" width="1" height="1" fill="white"/><rect x="2" y="7" width="1" height="1" fill="white"/><rect x="3" y="7" width="1" height="1" fill="white"/><rect x="4" y="7" width="1" height="1" fill="white"/><rect x="6" y="7" width="1" height="1" fill="white"/><rect x="7" y="7" width="1" height="1" fill="white"/>
-  </g>
-  <text x="80" y="308" font-family="Arial" font-size="7"
-        text-anchor="middle" fill="#888">ID 13</text>
+        text-anchor="middle" fill="#888">ID 3</text>
   
   
   <g transform="translate(235 464) scale(0.05859375)">
