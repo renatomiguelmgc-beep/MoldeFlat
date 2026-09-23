@@ -3,30 +3,48 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Digitalizador de Moldes CNC</title>
+<title>MoldeFlat</title>
 <link rel="stylesheet" href="style.css" />
 
 <!-- PWA: instalar na tela inicial -->
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#0f1115" />
-<link rel="icon" href="icons/favicon-32.png" sizes="32x32" />
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<meta name="theme-color" content="#0b0f1a" />
+<link rel="icon" href="icons/v2/favicon-32.png" sizes="32x32" />
+<link rel="apple-touch-icon" href="icons/v2/apple-touch-icon.png" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="MoldeFlat" />
 </head>
 <body>
+
+<!-- Banner de instalação (aparece via JS quando faz sentido) -->
+<div id="installBanner" class="install-banner hidden">
+  <img src="icons/v2/icon-192.png" alt="" class="install-icon" />
+  <div class="install-text">
+    <strong>Instalar MoldeFlat</strong>
+    <span id="installHint">Adicione à tela inicial pra abrir como app</span>
+  </div>
+  <button id="btnInstall" class="btn btn-primary btn-sm hidden">Instalar</button>
+  <button id="btnInstallDismiss" class="btn-close" aria-label="Fechar">&times;</button>
+</div>
+
 <header class="topbar">
-  <h1>Digitalizador de Moldes</h1>
-  <p class="subtitle">Foto do molde sobre o tapete de calibração → imagem corrigida (perspectiva + escala real)</p>
+  <img src="icons/v2/icon-192.png" alt="" class="logo" />
+  <div>
+    <h1>MoldeFlat</h1>
+    <p class="subtitle">Foto do molde → imagem sem distorção, em escala real</p>
+  </div>
 </header>
 
 <main id="app">
 
   <!-- Etapa 1: escolher o tapete -->
   <section id="step-profile" class="step">
-    <h2>1. Tapete de calibração</h2>
+    <div class="step-head">
+      <span class="step-badge">1</span>
+      <h2>Tapete de calibração</h2>
+    </div>
     <label for="profileSelect">Qual tapete você está usando?</label>
     <select id="profileSelect"></select>
     <p id="profileInfo" class="hint"></p>
@@ -34,16 +52,24 @@
 
   <!-- Etapa 2: captura -->
   <section id="step-capture" class="step">
-    <h2>2. Foto do molde</h2>
+    <div class="step-head">
+      <span class="step-badge">2</span>
+      <h2>Foto do molde</h2>
+    </div>
     <p class="hint">
       Posicione o molde sobre o tapete, com os 4 marcadores dos cantos visíveis e sem cobrir nenhum.
       Fotografe de cima, o mais reto possível (perspectiva leve é corrigida automaticamente).
     </p>
 
     <div id="cameraWrap" class="camera-wrap hidden">
-      <video id="video" playsinline autoplay muted></video>
+      <div class="video-box">
+        <video id="video" playsinline autoplay muted></video>
+        <svg class="frame-guide" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M 6 20 L 6 6 L 20 6 M 80 6 L 94 6 L 94 20 M 94 80 L 94 94 L 80 94 M 20 94 L 6 94 L 6 80" />
+        </svg>
+      </div>
       <div class="camera-actions">
-        <button id="btnShot" class="btn btn-primary">Capturar foto</button>
+        <button id="btnShot" class="btn btn-primary">📷 Capturar foto</button>
         <button id="btnStopCamera" class="btn btn-ghost">Cancelar</button>
       </div>
     </div>
@@ -59,7 +85,11 @@
 
   <!-- Etapa 3: processamento -->
   <section id="step-process" class="step hidden">
-    <h2>3. Processando</h2>
+    <div class="step-head">
+      <span class="step-badge">3</span>
+      <h2>Processando</h2>
+    </div>
+    <div class="progress-track"><div id="progressFill" class="progress-fill"></div></div>
     <div id="processStatus" class="status"></div>
     <canvas id="sourceCanvas" class="hidden"></canvas>
     <canvas id="detectCanvas" class="hidden"></canvas>
@@ -67,13 +97,16 @@
 
   <!-- Etapa 4: resultado -->
   <section id="step-result" class="step hidden">
-    <h2>4. Imagem corrigida</h2>
+    <div class="step-head">
+      <span class="step-badge step-badge-ok">✓</span>
+      <h2>Imagem corrigida</h2>
+    </div>
     <div class="result-wrap">
       <canvas id="resultCanvas"></canvas>
     </div>
     <p id="resultInfo" class="hint"></p>
     <div class="result-actions">
-      <button id="btnDownload" class="btn btn-primary">Baixar imagem</button>
+      <button id="btnDownload" class="btn btn-primary">⬇ Baixar imagem</button>
       <button id="btnShare" class="btn btn-secondary hidden">Compartilhar</button>
       <button id="btnRetry" class="btn btn-ghost">Nova foto</button>
     </div>
@@ -88,12 +121,5 @@
 <script src="lib/cv.js"></script>
 <script src="lib/aruco.js"></script>
 <script src="app.js"></script>
-<script>
-  if ("serviceWorker" in navigator) {
-    window.addEventListener("load", () => {
-      navigator.serviceWorker.register("sw.js").catch(() => {});
-    });
-  }
-</script>
 </body>
 </html>

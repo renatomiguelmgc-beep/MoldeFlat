@@ -32,6 +32,11 @@ const resultInfo = el("resultInfo");
 const btnDownload = el("btnDownload");
 const btnShare = el("btnShare");
 const btnRetry = el("btnRetry");
+const progressFill = el("progressFill");
+const installBanner = el("installBanner");
+const installHint = el("installHint");
+const btnInstall = el("btnInstall");
+const btnInstallDismiss = el("btnInstallDismiss");
 
 /* ------------------------------------------------------------------ *
  * Carregar perfis do tapete
@@ -145,10 +150,15 @@ function setStatus(msg, kind) {
   processStatus.className = "status" + (kind ? " status-" + kind : "");
 }
 
+function setProgress(fraction) {
+  if (progressFill) progressFill.style.width = Math.round(fraction * 100) + "%";
+}
+
 async function processImage() {
   stepProcess.classList.remove("hidden");
   stepResult.classList.add("hidden");
   stepProcess.scrollIntoView({ behavior: "smooth", block: "start" });
+  setProgress(0.05);
 
   await nextFrame();
   setStatus("Preparando imagem para detecção...");
@@ -166,6 +176,7 @@ async function processImage() {
   const imageData = dctx.getImageData(0, 0, dW, dH);
 
   setStatus("Detectando marcadores do tapete...");
+  setProgress(0.15);
   await nextFrame();
 
   let markers;
@@ -174,6 +185,7 @@ async function processImage() {
     markers = detector.detect(imageData);
   } catch (err) {
     setStatus("Erro ao detectar marcadores: " + err.message, "error");
+    setProgress(0);
     return;
   }
 
@@ -188,10 +200,12 @@ async function processImage() {
       `Tente novamente com todos os 4 cantos do tapete visíveis, bem iluminados e sem reflexo.`,
       "error"
     );
+    setProgress(0);
     return;
   }
 
   setStatus("Marcadores encontrados. Calculando correção de perspectiva e escala...");
+  setProgress(0.3);
   await nextFrame();
 
   // Pontos de origem (na foto em resolução total) e destino (mm reais, escalados para px)
@@ -230,6 +244,7 @@ async function processImage() {
 
   await warpPerspective(srcData, outImageData, Hinv, srcW, srcH, (progress) => {
     setStatus(`Gerando imagem corrigida... ${Math.round(progress * 100)}%`);
+    setProgress(0.3 + progress * 0.65);
   });
   fctx.putImageData(outImageData, 0, 0);
 
@@ -245,6 +260,7 @@ async function processImage() {
     `Use a régua de ${100} mm no rodapé da imagem para conferir/ajustar a escala no AutoCAD.`;
 
   setStatus("Concluído!", "ok");
+  setProgress(1);
   stepResult.classList.remove("hidden");
   stepResult.scrollIntoView({ behavior: "smooth", block: "start" });
   setupDownloadShare(finalCanvas);
@@ -257,7 +273,9 @@ function markerCenter(corners) {
 }
 
 function nextFrame() {
-  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+  // setTimeout (não requestAnimationFrame) de propósito: rAF pausa por completo
+  // quando a aba/app vai para segundo plano, o que travaria o processamento.
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /* ------------------------------------------------------------------ *
@@ -431,6 +449,75 @@ btnRetry.addEventListener("click", () => {
   stepProcess.classList.add("hidden");
   el("step-capture").scrollIntoView({ behavior: "smooth", block: "start" });
 });
+
+/* ------------------------------------------------------------------ *
+ * Instalar como app (tela inicial)
+ * ------------------------------------------------------------------ */
+
+const INSTALL_DISMISS_KEY = "moldeflat_install_dismissed_at";
+const INSTALL_DISMISS_DAYS = 14;
+
+function isStandalone() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function isIOS() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); // iPadOS 13+
+}
+
+function recentlyDismissed() {
+  const raw = localStorage.getItem(INSTALL_DISMISS_KEY);
+  if (!raw) return false;
+  const days = (Date.now() - parseInt(raw, 10)) / 86400000;
+  return days < INSTALL_DISMISS_DAYS;
+}
+
+let deferredInstallPrompt = null;
+
+function showInstallBanner({ withButton }) {
+  if (isStandalone() || recentlyDismissed()) return;
+  installBanner.classList.remove("hidden");
+  btnInstall.classList.toggle("hidden", !withButton);
+  installHint.textContent = withButton
+    ? "Adicione à tela inicial pra abrir como app"
+    : "Toque em compartilhar (⬆) e depois em \"Adicionar à Tela de Início\"";
+}
+
+function hideInstallBanner() {
+  installBanner.classList.add("hidden");
+}
+
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  showInstallBanner({ withButton: true });
+});
+
+window.addEventListener("appinstalled", hideInstallBanner);
+
+btnInstall.addEventListener("click", async () => {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  await deferredInstallPrompt.userChoice;
+  deferredInstallPrompt = null;
+  hideInstallBanner();
+});
+
+btnInstallDismiss.addEventListener("click", () => {
+  localStorage.setItem(INSTALL_DISMISS_KEY, String(Date.now()));
+  hideInstallBanner();
+});
+
+if (isIOS() && !isStandalone()) {
+  showInstallBanner({ withButton: false });
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
 
 /* ------------------------------------------------------------------ */
 
