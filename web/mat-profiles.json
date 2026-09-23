@@ -1,7 +1,23 @@
 {
-  "_comment": "Perfis de tapete de calibração. Cada perfil define o tamanho físico do tapete impresso e a posição real (em mm) do CENTRO de cada marcador ArUco nos 4 cantos. O app usa esses pontos como referência para calcular a correção de perspectiva e a escala real. Para adicionar um novo tamanho, copie um perfil, mude id/nome/width_mm/height_mm/margin_mm e rode 'node generate_mat.js <id>' para gerar o SVG de impressão.",
+  "_comment": "Perfis de tapete de calibração. Cada perfil define o tamanho físico do tapete impresso e a posição real (em mm) do CENTRO de cada marcador ArUco. O app usa esses pontos como referência para calcular a correção de perspectiva e a escala real. O primeiro perfil da lista é o selecionado por padrão ao abrir o app. Para adicionar um novo tamanho, use build_profile.js (layout na borda) ou copie um perfil existente com 'corner' (layout de 4 cantos) e rode 'node generate_mat.js <id>' para gerar o SVG de impressão.",
   "dictionary": "ARUCO_MIP_36h12",
   "profiles": [
+    {
+      "id": "tapete_500x1000_borda",
+      "nome": "50 x 100 cm (preto)",
+      "descricao": "4 marcadores nos cantos, fundo preto. Perfil padrão do app.",
+      "width_mm": 500,
+      "height_mm": 1000,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "background": "black",
+      "markers": [
+        { "id": 0, "x_mm": 80, "y_mm": 80 },
+        { "id": 1, "x_mm": 420, "y_mm": 80 },
+        { "id": 2, "x_mm": 420, "y_mm": 920 },
+        { "id": 3, "x_mm": 80, "y_mm": 920 }
+      ]
+    },
     {
       "id": "padrao_1000x700",
       "nome": "Padrão 100 x 70 cm",
@@ -11,22 +27,10 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        {
-          "id": 0,
-          "corner": "top-left"
-        },
-        {
-          "id": 1,
-          "corner": "top-right"
-        },
-        {
-          "id": 2,
-          "corner": "bottom-right"
-        },
-        {
-          "id": 3,
-          "corner": "bottom-left"
-        }
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
       ]
     },
     {
@@ -38,22 +42,10 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        {
-          "id": 0,
-          "corner": "top-left"
-        },
-        {
-          "id": 1,
-          "corner": "top-right"
-        },
-        {
-          "id": 2,
-          "corner": "bottom-right"
-        },
-        {
-          "id": 3,
-          "corner": "bottom-left"
-        }
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
       ]
     },
     {
@@ -65,54 +57,10 @@
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
-        {
-          "id": 0,
-          "corner": "top-left"
-        },
-        {
-          "id": 1,
-          "corner": "top-right"
-        },
-        {
-          "id": 2,
-          "corner": "bottom-right"
-        },
-        {
-          "id": 3,
-          "corner": "bottom-left"
-        }
-      ]
-    },
-    {
-      "id": "tapete_500x1000_borda",
-      "nome": "50 x 100 cm (preto)",
-      "descricao": "Marcadores distribuídos ao redor de toda a borda (4 no total), não só nos 4 cantos — robusto a oclusão parcial (basta ~4 visíveis pra calibrar). Fundo preto.",
-      "width_mm": 500,
-      "height_mm": 1000,
-      "marker_size_mm": 100,
-      "margin_mm": 80,
-      "background": "black",
-      "markers": [
-        {
-          "id": 0,
-          "x_mm": 80,
-          "y_mm": 80
-        },
-        {
-          "id": 1,
-          "x_mm": 420,
-          "y_mm": 80
-        },
-        {
-          "id": 2,
-          "x_mm": 420,
-          "y_mm": 920
-        },
-        {
-          "id": 3,
-          "x_mm": 80,
-          "y_mm": 920
-        }
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
       ]
     }
   ]

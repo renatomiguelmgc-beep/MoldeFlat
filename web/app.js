@@ -54,9 +54,13 @@ async function loadProfiles() {
     opt.textContent = p.nome;
     profileSelect.appendChild(opt);
   }
-  profileSelect.addEventListener("change", updateProfileInfo);
+  profileSelect.addEventListener("change", () => {
+    updateProfileInfo();
+    openCamera();
+  });
   currentProfile = matConfig.profiles[0];
   updateProfileInfo();
+  openCamera();
 }
 
 function updateProfileInfo() {
@@ -90,7 +94,13 @@ function markerRealXY(m, profile) {
  * Câmera
  * ------------------------------------------------------------------ */
 
-btnOpenCamera.addEventListener("click", async () => {
+btnOpenCamera.addEventListener("click", () => openCamera(false));
+
+// silent=true nas aberturas automáticas (ao carregar a página / trocar de
+// tapete) — se falhar (ex.: permissão ainda não concedida), a pessoa sempre
+// pode abrir manualmente pelo botão "Abrir câmera", que aí sim mostra o erro.
+async function openCamera(silent = true) {
+  if (mediaStream) return; // já aberta (ex.: trocou de tapete com a câmera em uso)
   try {
     mediaStream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -102,10 +112,11 @@ btnOpenCamera.addEventListener("click", async () => {
     });
     video.srcObject = mediaStream;
     cameraWrap.classList.remove("hidden");
+    document.body.classList.add("camera-mode");
   } catch (err) {
-    alert("Não foi possível abrir a câmera: " + err.message);
+    if (!silent) alert("Não foi possível abrir a câmera: " + err.message);
   }
-});
+}
 
 btnStopCamera.addEventListener("click", stopCamera);
 
@@ -115,6 +126,7 @@ function stopCamera() {
     mediaStream = null;
   }
   cameraWrap.classList.add("hidden");
+  document.body.classList.remove("camera-mode");
 }
 
 btnShot.addEventListener("click", () => {
@@ -534,7 +546,7 @@ function setupDownloadShare(canvas) {
 btnRetry.addEventListener("click", () => {
   stepResult.classList.add("hidden");
   stepProcess.classList.add("hidden");
-  el("step-capture").scrollIntoView({ behavior: "smooth", block: "start" });
+  openCamera(false);
 });
 
 /* ------------------------------------------------------------------ *
