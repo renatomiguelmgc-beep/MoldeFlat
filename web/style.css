@@ -242,6 +242,33 @@ select {
 .status.status-error { color: var(--danger); border-color: rgba(255,107,107,0.35); }
 .status.status-ok { color: var(--ok); border-color: rgba(53,214,138,0.35); }
 
+/* ---------- Calibration warning ---------- */
+
+.calib-warning {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  line-height: 1.45;
+  margin-bottom: 14px;
+  border: 1px solid;
+}
+.calib-warning.hidden { display: none; }
+.calib-warning.level-ok {
+  background: rgba(53, 214, 138, 0.1);
+  border-color: rgba(53, 214, 138, 0.35);
+  color: var(--ok);
+}
+.calib-warning.level-warn {
+  background: rgba(255, 196, 0, 0.1);
+  border-color: rgba(255, 196, 0, 0.4);
+  color: #ffc400;
+}
+.calib-warning.level-error {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: var(--danger);
+}
+
 /* ---------- Result ---------- */
 
 .result-wrap {

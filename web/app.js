@@ -33,6 +33,7 @@ const btnDownload = el("btnDownload");
 const btnShare = el("btnShare");
 const btnRetry = el("btnRetry");
 const progressFill = el("progressFill");
+const calibWarning = el("calibWarning");
 const installBanner = el("installBanner");
 const installHint = el("installHint");
 const btnInstall = el("btnInstall");
@@ -227,6 +228,12 @@ async function processImage() {
   const H = computeHomography(srcPts, dstPts);
   const Hinv = invert3x3(H);
 
+  // Autoverificação: cada marcador tem um tamanho real conhecido (marker_size_mm).
+  // Medimos o próprio marcador DEPOIS de corrigido e comparamos com esse valor —
+  // se não bater, a suposição de geometria do tapete (ou a detecção) está errada,
+  // e isso teria passado batido com um ajuste de só 4 pontos (sempre "perfeito").
+  const calibration = checkCalibrationQuality(H, currentProfile, found, scaleDetect, pxPerMm);
+
   setStatus("Gerando imagem corrigida (pode levar alguns segundos)...");
   await nextFrame();
 
@@ -258,6 +265,8 @@ async function processImage() {
   resultInfo.textContent =
     `Escala: 1 px = ${mmPerPx.toFixed(3)} mm (1 cm real = ${(pxPerMm * 10).toFixed(1)} px). ` +
     `Use a régua de ${100} mm no rodapé da imagem para conferir/ajustar a escala no AutoCAD.`;
+
+  showCalibrationWarning(calibration, currentProfile);
 
   setStatus("Concluído!", "ok");
   setProgress(1);
@@ -342,6 +351,60 @@ function applyH(m, x, y) {
   const Y = m[1][0] * x + m[1][1] * y + m[1][2];
   const W = m[2][0] * x + m[2][1] * y + m[2][2];
   return [X / W, Y / W];
+}
+
+// Só os CENTROS dos marcadores entram no cálculo da homografia (4 pontos = ajuste
+// exato, sem sobra pra acusar erro). Os CANTOS de cada marcador não são usados pra
+// calcular a transformação, então dá pra usá-los como verificação independente:
+// cada marcador mede marker_size_mm de lado na vida real — comparamos com o que
+// ele mede depois de corrigido.
+function checkCalibrationQuality(H, profile, found, scaleDetect, pxPerMm) {
+  // detect() traça o contorno do quadrado PRETO do marcador — a zona de silêncio
+  // branca ao redor (parte do "tile" gerado por generateSVG) não é detectável
+  // contra o fundo branco do tapete. O tile inteiro tem (markSize+2) unidades de
+  // lado, e o quadrado preto tem markSize unidades — então o que a câmera
+  // realmente vê é marker_size_mm * markSize / (markSize + 2), não marker_size_mm.
+  const dict = new AR.Dictionary(matConfig.dictionary);
+  const detectableMm = (profile.marker_size_mm * dict.markSize) / (dict.markSize + 2);
+
+  const results = [];
+  for (const m of profile.markers) {
+    const marker = found.get(m.id);
+    const corners = marker.corners.map((c) => ({ x: c.x / scaleDetect, y: c.y / scaleDetect }));
+    const transformed = corners.map((c) => applyH(H, c.x, c.y));
+    let sumSides = 0;
+    for (let i = 0; i < 4; i++) {
+      const [x1, y1] = transformed[i];
+      const [x2, y2] = transformed[(i + 1) % 4];
+      sumSides += Math.hypot(x2 - x1, y2 - y1);
+    }
+    const avgSidePx = sumSides / 4;
+    const measuredMm = avgSidePx / pxPerMm;
+    const errorPct = ((measuredMm - detectableMm) / detectableMm) * 100;
+    results.push({ id: m.id, measuredMm, errorPct });
+  }
+  const maxAbsErrorPct = Math.max(...results.map((r) => Math.abs(r.errorPct)));
+  return { perMarker: results, maxAbsErrorPct, detectableMm };
+}
+
+function showCalibrationWarning(calibration, profile) {
+  const pct = calibration.maxAbsErrorPct;
+  const pctStr = pct.toFixed(1);
+  let level, msg;
+  const expectedMm = calibration.detectableMm.toFixed(1);
+  if (pct < 1.5) {
+    level = "ok";
+    msg = `✓ Calibração conferida: os marcadores mediram dentro de ${pctStr}% do esperado (${expectedMm} mm). Escala confiável.`;
+  } else if (pct < 4) {
+    level = "warn";
+    msg = `⚠ Atenção: os marcadores mediram ${pctStr}% fora do esperado (${expectedMm} mm) depois de corrigidos. Pode ser leve imprecisão de detecção — confira uma medida real antes de confiar 100% na escala.`;
+  } else {
+    level = "error";
+    msg = `⚠ Provável erro de escala: os marcadores mediram ${pctStr}% fora do esperado (deveriam medir ${expectedMm} mm). ` +
+      `Confira se o perfil de tapete selecionado ("${profile.nome}") bate com o tapete físico usado, e se os 4 marcadores foram bem detectados. Não confie nesta imagem para corte sem checar antes.`;
+  }
+  calibWarning.textContent = msg;
+  calibWarning.className = "calib-warning level-" + level;
 }
 
 // Amostragem bilinear de srcData em (x,y) (coordenadas de ponto flutuante)
