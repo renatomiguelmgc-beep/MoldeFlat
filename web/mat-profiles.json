@@ -20,9 +20,24 @@
     {
       "id": "tapete_500x1000",
       "nome": "50 x 100 cm",
-      "descricao": "Tapete estreito e comprido, 50 x 100 cm.",
+      "descricao": "Tapete estreito e comprido, 50 x 100 cm. Pendente: os marcadores mediram ~3,8% menores que os 100mm nominais numa foto real (23/09/2026), mas isso sozinho não confirma se width_mm/height_mm/margin_mm (o que define a escala real da imagem) também estão errados — precisa de uma medida física direta (trena) pra corrigir com segurança. Ver conversa/README.",
       "width_mm": 500,
       "height_mm": 1000,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "markers": [
+        { "id": 0, "corner": "top-left" },
+        { "id": 1, "corner": "top-right" },
+        { "id": 2, "corner": "bottom-right" },
+        { "id": 3, "corner": "bottom-left" }
+      ]
+    },
+    {
+      "id": "tapete_1000x1500",
+      "nome": "100 x 150 cm",
+      "descricao": "Tapete grande, 100 x 150 cm.",
+      "width_mm": 1000,
+      "height_mm": 1500,
       "marker_size_mm": 100,
       "margin_mm": 80,
       "markers": [
