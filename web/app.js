@@ -435,21 +435,24 @@ function checkCalibrationQuality(H, markersToCheck, found, scaleDetect, pxPerMm,
   return { perMarker: results, maxAbsErrorPct, detectableMm };
 }
 
+const CALIB_OK_THRESHOLD_PCT = 1; // abaixo disso: pode usar. Igual ou acima: não recomendado.
+
 function showCalibrationWarning(calibration, profile) {
   const pct = calibration.maxAbsErrorPct;
-  const pctStr = pct.toFixed(1);
+  const pctStr = pct.toFixed(2);
   let level, msg;
   const expectedMm = calibration.detectableMm.toFixed(1);
-  if (pct < 1.5) {
+  if (pct <= CALIB_OK_THRESHOLD_PCT) {
     level = "ok";
-    msg = `✓ Calibração conferida: os marcadores mediram dentro de ${pctStr}% do esperado (${expectedMm} mm). Escala confiável.`;
+    msg = `✓ PODE USAR — calibração dentro de ${pctStr}% do esperado (${expectedMm} mm), até o limite de ${CALIB_OK_THRESHOLD_PCT}%.`;
   } else if (pct < 4) {
     level = "warn";
-    msg = `⚠ Atenção: os marcadores mediram ${pctStr}% fora do esperado (${expectedMm} mm) depois de corrigidos. Pode ser leve imprecisão de detecção — confira uma medida real antes de confiar 100% na escala.`;
+    msg = `✖ NÃO recomendado usar esta imagem sem conferir — erro de ${pctStr}% (limite pra uso seguro é ${CALIB_OK_THRESHOLD_PCT}%). ` +
+      `Pode ser leve imprecisão de detecção (luz, ângulo) — tire outra foto ou confira uma medida real antes de mandar cortar.`;
   } else {
     level = "error";
-    msg = `⚠ Provável erro de escala: os marcadores mediram ${pctStr}% fora do esperado (deveriam medir ${expectedMm} mm). ` +
-      `Confira se o perfil de tapete selecionado ("${profile.nome}") bate com o tapete físico usado, e se os 4 marcadores foram bem detectados. Não confie nesta imagem para corte sem checar antes.`;
+    msg = `✖ NÃO USE esta imagem — erro de ${pctStr}% é grande demais (deveria ser abaixo de ${CALIB_OK_THRESHOLD_PCT}%, marcador deveria medir ${expectedMm} mm). ` +
+      `Confira se o perfil de tapete selecionado ("${profile.nome}") bate com o tapete físico usado, e se os 4 marcadores foram bem detectados.`;
   }
   calibWarning.textContent = msg;
   calibWarning.className = "calib-warning level-" + level;
