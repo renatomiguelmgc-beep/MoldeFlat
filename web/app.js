@@ -45,7 +45,9 @@ const btnInstallDismiss = el("btnInstallDismiss");
  * ------------------------------------------------------------------ */
 
 async function loadProfiles() {
-  const res = await fetch("mat-profiles.json");
+  // no-store: o app é atualizado com frequência (perfis de tapete novos/
+  // corrigidos) e o celular não pode ficar preso numa versão antiga em cache.
+  const res = await fetch("mat-profiles.json", { cache: "no-store" });
   matConfig = await res.json();
   profileSelect.innerHTML = "";
   for (const p of matConfig.profiles) {
@@ -102,11 +104,15 @@ btnOpenCamera.addEventListener("click", () => openCamera(false));
 async function openCamera(silent = true) {
   if (mediaStream) return; // já aberta (ex.: trocou de tapete com a câmera em uso)
   try {
+    // 1920x1080 (não 4K): pedir resolução muito alta faz alguns celulares
+    // demorarem bem mais pra iniciar a câmera. A foto final não perde muito —
+    // "Carregar foto" (app nativo de câmera) continua sendo o caminho de
+    // maior qualidade quando isso importa.
     mediaStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: "environment" },
-        width: { ideal: 3840 },
-        height: { ideal: 2160 },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
       },
       audio: false,
     });
@@ -214,10 +220,12 @@ async function processImage() {
   // grande pode cobrir parte do tapete sem quebrar a calibração, desde que
   // marcadores suficientes continuem visíveis em outros pontos da borda.
   const usedMarkers = currentProfile.markers.filter((m) => found.has(m.id));
+  const missingIds = currentProfile.markers.filter((m) => !found.has(m.id)).map((m) => m.id);
   if (usedMarkers.length < MIN_MARKERS_REQUIRED) {
     setStatus(
       `Só encontrei ${usedMarkers.length} de ${currentProfile.markers.length} marcadores ` +
       `(preciso de pelo menos ${MIN_MARKERS_REQUIRED}). ` +
+      `Faltando: ID ${missingIds.join(", ID ")}. ` +
       `Tente novamente com mais marcadores da borda visíveis, bem iluminados e sem reflexo.`,
       "error"
     );
@@ -225,7 +233,11 @@ async function processImage() {
     return;
   }
 
-  setStatus(`${usedMarkers.length} de ${currentProfile.markers.length} marcadores encontrados. Calculando correção de perspectiva e escala...`);
+  setStatus(
+    `${usedMarkers.length} de ${currentProfile.markers.length} marcadores encontrados` +
+    (missingIds.length ? ` (faltou ID ${missingIds.join(", ID ")})` : "") +
+    `. Calculando correção de perspectiva e escala...`
+  );
   setProgress(0.3);
   await nextFrame();
 
