@@ -3,9 +3,25 @@
   "dictionary": "ARUCO_MIP_36h12",
   "profiles": [
     {
+      "id": "tapete_1000x1500_preto",
+      "nome": "100 x 150 cm (preto)",
+      "descricao": "4 marcadores nos cantos, fundo preto. Perfil padrão do app.",
+      "width_mm": 1000,
+      "height_mm": 1500,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "background": "black",
+      "markers": [
+        { "id": 0, "x_mm": 80, "y_mm": 80 },
+        { "id": 1, "x_mm": 920, "y_mm": 80 },
+        { "id": 2, "x_mm": 920, "y_mm": 1420 },
+        { "id": 3, "x_mm": 80, "y_mm": 1420 }
+      ]
+    },
+    {
       "id": "tapete_500x1000_borda",
       "nome": "50 x 100 cm (preto)",
-      "descricao": "4 marcadores nos cantos, fundo preto. Perfil padrão do app.",
+      "descricao": "4 marcadores nos cantos, fundo preto.",
       "width_mm": 500,
       "height_mm": 1000,
       "marker_size_mm": 100,
