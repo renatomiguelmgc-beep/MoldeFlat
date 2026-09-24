@@ -1,11 +1,11 @@
 {
-  "_comment": "Perfis de tapete de calibração. Cada perfil define o tamanho físico do tapete impresso e a posição real (em mm) do CENTRO de cada marcador ArUco. O app usa esses pontos como referência para calcular a correção de perspectiva e a escala real. O primeiro perfil da lista é o selecionado por padrão ao abrir o app. Para adicionar um novo tamanho, use build_profile.js (layout na borda) ou copie um perfil existente com 'corner' (layout de 4 cantos) e rode 'node generate_mat.js <id>' para gerar o SVG de impressão.",
+  "_comment": "Perfis de tapete de calibração. Cada perfil define o tamanho físico do tapete impresso e a posição real (em mm) do CENTRO de cada marcador ArUco. O app usa esses pontos como referência para calcular a correção de perspectiva e a escala real. O primeiro perfil da lista é o selecionado por padrão ao abrir o app. Para adicionar um novo tamanho, use build_profile.js (layout na borda) ou copie este perfil e rode 'node generate_mat.js <id>' para gerar o SVG de impressão.",
   "dictionary": "ARUCO_MIP_36h12",
   "profiles": [
     {
       "id": "tapete_1000x1500_preto",
       "nome": "100 x 150 cm (preto)",
-      "descricao": "4 marcadores nos cantos, fundo preto. Perfil padrão do app.",
+      "descricao": "4 marcadores nos cantos, fundo preto. Único perfil do app.",
       "width_mm": 1000,
       "height_mm": 1500,
       "marker_size_mm": 100,
@@ -16,67 +16,6 @@
         { "id": 1, "x_mm": 920, "y_mm": 80 },
         { "id": 2, "x_mm": 920, "y_mm": 1420 },
         { "id": 3, "x_mm": 80, "y_mm": 1420 }
-      ]
-    },
-    {
-      "id": "tapete_500x1000_borda",
-      "nome": "50 x 100 cm (preto)",
-      "descricao": "4 marcadores nos cantos, fundo preto.",
-      "width_mm": 500,
-      "height_mm": 1000,
-      "marker_size_mm": 100,
-      "margin_mm": 80,
-      "background": "black",
-      "markers": [
-        { "id": 0, "x_mm": 80, "y_mm": 80 },
-        { "id": 1, "x_mm": 420, "y_mm": 80 },
-        { "id": 2, "x_mm": 420, "y_mm": 920 },
-        { "id": 3, "x_mm": 80, "y_mm": 920 }
-      ]
-    },
-    {
-      "id": "padrao_1000x700",
-      "nome": "Padrão 100 x 70 cm",
-      "descricao": "Perfil inicial (provisório). Ajustar width_mm/height_mm quando o tamanho final do tapete for definido.",
-      "width_mm": 1000,
-      "height_mm": 700,
-      "marker_size_mm": 100,
-      "margin_mm": 80,
-      "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
-      ]
-    },
-    {
-      "id": "tapete_500x1000",
-      "nome": "50 x 100 cm",
-      "descricao": "Tapete estreito e comprido, 50 x 100 cm. Pendente: os marcadores mediram ~3,8% menores que os 100mm nominais numa foto real (23/09/2026), mas isso sozinho não confirma se width_mm/height_mm/margin_mm (o que define a escala real da imagem) também estão errados — precisa de uma medida física direta (trena) pra corrigir com segurança. Ver conversa/README.",
-      "width_mm": 500,
-      "height_mm": 1000,
-      "marker_size_mm": 100,
-      "margin_mm": 80,
-      "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
-      ]
-    },
-    {
-      "id": "tapete_1000x1500",
-      "nome": "100 x 150 cm",
-      "descricao": "Tapete grande, 100 x 150 cm.",
-      "width_mm": 1000,
-      "height_mm": 1500,
-      "marker_size_mm": 100,
-      "margin_mm": 80,
-      "markers": [
-        { "id": 0, "corner": "top-left" },
-        { "id": 1, "corner": "top-right" },
-        { "id": 2, "corner": "bottom-right" },
-        { "id": 3, "corner": "bottom-left" }
       ]
     }
   ]
