@@ -17,6 +17,24 @@
         { "id": 2, "x_mm": 920, "y_mm": 1420 },
         { "id": 3, "x_mm": 80, "y_mm": 1420 }
       ]
+    },
+    {
+      "id": "tapete_1000x1500_fita",
+      "nome": "100 x 150 cm (preto + fita) [TESTE]",
+      "descricao": "Mesmos 4 marcadores nos cantos, mais uma fita de referência De Bruijn ao longo da borda pra refinar a precisão além dos 4 pontos. Em teste — imprimir e validar com foto real antes de usar em produção.",
+      "width_mm": 1000,
+      "height_mm": 1500,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "background": "black",
+      "ribbon": true,
+      "ribbon_bits": 8,
+      "markers": [
+        { "id": 0, "x_mm": 80, "y_mm": 80 },
+        { "id": 1, "x_mm": 920, "y_mm": 80 },
+        { "id": 2, "x_mm": 920, "y_mm": 1420 },
+        { "id": 3, "x_mm": 80, "y_mm": 1420 }
+      ]
     }
   ]
 }

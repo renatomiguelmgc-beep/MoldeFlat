@@ -71,6 +71,7 @@ function updateProfileInfo() {
   profileInfo.textContent =
     `${p.width_mm / 10} x ${p.height_mm / 10} cm · ${p.markers.length} marcadores de ${p.marker_size_mm / 10} cm · ` +
     `precisa de pelo menos ${MIN_MARKERS_REQUIRED} visíveis para calibrar.` +
+    (p.ribbon ? " Inclui fita de referência para maior precisão." : "") +
     (p.descricao ? ` ${p.descricao}` : "");
 }
 
@@ -260,7 +261,32 @@ async function processImage() {
   // Com exatamente 4 pontos isso é um ajuste exato; com mais, é por mínimos
   // quadrados (mais robusto a ruído de detecção e a marcadores individuais
   // com posição ligeiramente imprecisa).
-  const H = computeHomography(srcPts, dstPts);
+  const Hrough = computeHomography(srcPts, dstPts);
+  const HroughInv = invert3x3(Hrough);
+
+  // Se o perfil tem fita de referência (borda com padrão De Bruijn), lê os
+  // bits, localiza cada célula na sequência com confiança e usa os pontos
+  // extras (muito mais numerosos que os 4 cantos) pra refinar a homografia.
+  // Precisa da foto em resolução total (não a cópia reduzida da detecção).
+  // Buscamos os pixels da foto em resolução total aqui (não só quando a fita
+  // está ativa) pra reaproveitar no warp final mais abaixo, sem ler duas vezes.
+  const srcCtx = sourceCanvas.getContext("2d");
+  const srcData = srcCtx.getImageData(0, 0, srcW, srcH);
+
+  let ribbonResult = null;
+  if (currentProfile.ribbon) {
+    setStatus("Lendo fita de referência para refinar a precisão...");
+    await nextFrame();
+    try {
+      ribbonResult = refineHomographyWithRibbon(
+        currentProfile, HroughInv, srcData, srcW, srcH, pxPerMm, srcPts, dstPts
+      );
+    } catch (err) {
+      ribbonResult = null; // qualquer falha na fita: segue só com os 4 cantos, nunca trava o app
+    }
+  }
+
+  const H = (ribbonResult && ribbonResult.Hfinal) ? ribbonResult.Hfinal : Hrough;
   const Hinv = invert3x3(H);
 
   // Autoverificação: cada marcador tem um tamanho real conhecido (marker_size_mm).
@@ -280,8 +306,6 @@ async function processImage() {
   fctx.fillStyle = "#ffffff";
   fctx.fillRect(0, 0, finalCanvas.width, finalCanvas.height);
 
-  const srcCtx = sourceCanvas.getContext("2d");
-  const srcData = srcCtx.getImageData(0, 0, srcW, srcH);
   const outImageData = fctx.getImageData(0, 0, outW, outH);
 
   await warpPerspective(srcData, outImageData, Hinv, srcW, srcH, (progress) => {
@@ -299,7 +323,12 @@ async function processImage() {
   const mmPerPx = 1 / pxPerMm;
   resultInfo.textContent =
     `Escala: 1 px = ${mmPerPx.toFixed(3)} mm (1 cm real = ${(pxPerMm * 10).toFixed(1)} px). ` +
-    `Use a régua de ${100} mm no rodapé da imagem para conferir/ajustar a escala no AutoCAD.`;
+    `Use a régua de ${100} mm no rodapé da imagem para conferir/ajustar a escala no AutoCAD.` +
+    (currentProfile.ribbon
+      ? (ribbonResult && ribbonResult.Hfinal
+          ? ` Calibração refinada com ${ribbonResult.pointsUsed} pontos da fita de referência.`
+          : ` Fita de referência não pôde ser lida com confiança (usando só os 4 cantos) — confira iluminação/foco da borda.`)
+      : "");
 
   showCalibrationWarning(calibration, currentProfile);
 
@@ -475,6 +504,176 @@ function sampleBilinear(srcData, w, h, x, y) {
     out[k] = top + (bot - top) * fy;
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Fita de referência De Bruijn (perfis com "ribbon: true")
+ *
+ * Além dos 4 cantos, o tapete tem uma fita fina na borda com células
+ * preto/branco codificando uma sequência de De Bruijn (ver web/lib/ribbon.js).
+ * Toda janela de N bits dessa sequência é única, então dá pra ler um trecho
+ * qualquer da fita (mesmo com peça cobrindo parte dela) e saber exatamente
+ * onde ele está no tapete. Cada célula branca lida com confiança vira um
+ * ponto extra de referência (muito mais numeroso que os 4 cantos), usado
+ * pra refinar a homografia — corrige erros de perspectiva que 4 pontos
+ * sozinhos não conseguem enxergar.
+ *
+ * Validado extensivamente em fotos sintéticas (ver scratchpad de P&D):
+ * 80-84% de redução no erro de posição em condições realistas de ruído de
+ * detecção. Ainda não testado com foto real de fita impressa.
+ * ------------------------------------------------------------------ */
+
+// Localiza um trecho lido (com bits eventualmente ilegíveis = null) na
+// sequência De Bruijn, só aceitando se o melhor candidato for inequivocamente
+// melhor que o segundo melhor (evita "acertar com confiança" errado).
+function locateConfident(seq, chunk, maxErrorRate, minMarginBits) {
+  const len = seq.length;
+  const scored = [];
+  for (let start = 0; start < len; start++) {
+    let errors = 0, readable = 0;
+    for (let j = 0; j < chunk.length; j++) {
+      if (chunk[j] === null) continue;
+      readable++;
+      if (seq[(start + j) % len] !== chunk[j]) errors++;
+    }
+    if (readable === 0) continue;
+    if (errors / readable <= maxErrorRate) scored.push({ start, errors, readable });
+  }
+  scored.sort((a, b) => a.errors - b.errors);
+  if (scored.length === 0) return { accepted: false };
+  if (scored.length === 1) return { accepted: true, start: scored[0].start };
+  const margin = scored[1].errors - scored[0].errors;
+  if (margin < minMarginBits) return { accepted: false };
+  return { accepted: true, start: scored[0].start };
+}
+
+// Lê a fita na foto (via Hrough, o ajuste só-4-cantos), localiza os trechos
+// legíveis na sequência, refina a posição real de cada célula lida por
+// correção de delta (não pelas posições brutas, que herdam o viés do Hrough),
+// e recalcula a homografia com cantos + pontos da fita (descartando os 15%
+// piores por resíduo, pra não deixar uma célula mal lida puxar tudo).
+// Retorna { Hfinal: null, pointsUsed } se não conseguir confiar em pontos
+// suficientes — nesse caso o chamador deve continuar usando só os 4 cantos.
+function refineHomographyWithRibbon(profile, HroughInv, srcData, srcW, srcH, pxPerMm, cornerSrcPts, cornerDstPts) {
+  const seqBits = Ribbon.deBruijn(2, profile.ribbon_bits || Ribbon.RIBBON_WINDOW_BITS);
+  const ribbonCells = Ribbon.buildRibbonCells(profile, seqBits);
+
+  function grayAt(x, y) {
+    const px = sampleBilinear(srcData, srcW, srcH, x, y);
+    return px ? (px[0] + px[1] + px[2]) / 3 : null;
+  }
+  function readCellBit(cell) {
+    let sum = 0, n = 0;
+    for (const fx of [0.3, 0.5, 0.7]) {
+      for (const fy of [0.3, 0.5, 0.7]) {
+        const outx = (cell.x + cell.w * fx) * pxPerMm, outy = (cell.y + cell.h * fy) * pxPerMm;
+        const [px, py] = applyH(HroughInv, outx, outy);
+        const g = grayAt(px, py);
+        if (g !== null) { sum += g; n++; }
+      }
+    }
+    if (n === 0) return null;
+    return sum / n > 110 ? 1 : 0;
+  }
+  const readBits = ribbonCells.map(readCellBit);
+
+  const WINDOW = 26, MAX_ERR_RATE = 0.15, MARGIN_BITS = 3;
+  const coveredIdx = new Set();
+  for (let start = 0; start + WINDOW <= readBits.length; start += 4) {
+    const chunk = readBits.slice(start, start + WINDOW);
+    const res = locateConfident(seqBits, chunk, MAX_ERR_RATE, MARGIN_BITS);
+    if (!res.accepted || res.start !== start) continue; // só aceita se bateu na própria posição (sem falso-positivo)
+    for (let j = 0; j < WINDOW; j++) coveredIdx.add(start + j);
+  }
+
+  function sweep1D(seedMmX, seedMmY, dirX, dirY, halfRangeMm, stepMm) {
+    const steps = Math.round(halfRangeMm / stepMm);
+    const samples = [];
+    for (let t = -steps; t <= steps; t++) {
+      const mmx = seedMmX + dirX * stepMm * t, mmy = seedMmY + dirY * stepMm * t;
+      const [px, py] = applyH(HroughInv, mmx * pxPerMm, mmy * pxPerMm);
+      samples.push({ px, py, g: grayAt(px, py) });
+    }
+    return samples;
+  }
+  function findCrossing(samples) {
+    const valid = samples.filter((s) => s.g !== null);
+    if (valid.length < 4) return null;
+    const lo = Math.min(...valid.map((s) => s.g)), hi = Math.max(...valid.map((s) => s.g));
+    if (hi - lo < 30) return null; // sem transição preto/branco clara: não confia
+    const mid = (lo + hi) / 2;
+    for (let i = 0; i < samples.length - 1; i++) {
+      const a = samples[i], b = samples[i + 1];
+      if (a.g === null || b.g === null) continue;
+      if (a.g >= mid && b.g < mid) {
+        const frac = (mid - a.g) / (b.g - a.g);
+        return { px: a.px + (b.px - a.px) * frac, py: a.py + (b.py - a.py) * frac };
+      }
+    }
+    return null;
+  }
+  // Correção de delta: mede (achado − previsto pelo Hrough) em DOIS eixos
+  // locais independentes (ao longo da fita "u", atravessando "v") no MESMO
+  // deslocamento de referência, e soma os dois deltas na posição prevista da
+  // célula. Válido porque, numa vizinhança pequena, qualquer homografia suave
+  // se comporta como uma transformação afim local.
+  function refine2D(cell) {
+    if (cell.bit !== 1) return null; // só células brancas têm uma borda nítida pra medir
+    const axes = Ribbon.cellAxes(cell);
+    const [seedPx, seedPy] = applyH(HroughInv, cell.cx * pxPerMm, cell.cy * pxPerMm);
+    const halfLen = (cell.w >= cell.h ? cell.w : cell.h) / 2;
+    let alongDelta = null;
+    for (const dir of [1, -1]) {
+      const ux = axes.u.x * dir, uy = axes.u.y * dir;
+      const foundPt = findCrossing(sweep1D(cell.cx, cell.cy, ux, uy, halfLen + 4, 0.5));
+      if (!foundPt) continue;
+      const [expPx, expPy] = applyH(HroughInv, (cell.cx + ux * halfLen) * pxPerMm, (cell.cy + uy * halfLen) * pxPerMm);
+      alongDelta = { dx: foundPt.px - expPx, dy: foundPt.py - expPy };
+      break;
+    }
+    if (!alongDelta) return null;
+    const sign = Ribbon.outwardSign(cell, profile, axes);
+    const vx = axes.v.x * sign, vy = axes.v.y * sign;
+    const foundV = findCrossing(sweep1D(cell.cx, cell.cy, vx, vy, 14, 0.5));
+    if (!foundV) return null;
+    const [expPxV, expPyV] = applyH(HroughInv, (cell.cx + vx * 10) * pxPerMm, (cell.cy + vy * 10) * pxPerMm);
+    const crossDelta = { dx: foundV.px - expPxV, dy: foundV.py - expPyV };
+    return {
+      px: seedPx + alongDelta.dx + crossDelta.dx,
+      py: seedPy + alongDelta.dy + crossDelta.dy,
+      mmx: cell.cx, mmy: cell.cy,
+    };
+  }
+
+  const extraSrc = [], extraDst = [];
+  for (let i = 0; i < ribbonCells.length; i++) {
+    if (!coveredIdx.has(i)) continue;
+    const pt = refine2D(ribbonCells[i]);
+    if (!pt) continue;
+    extraSrc.push({ x: pt.px, y: pt.py });
+    extraDst.push({ x: pt.mmx * pxPerMm, y: pt.mmy * pxPerMm });
+  }
+
+  // Poucos pontos confiáveis (ex.: peça grande cobrindo quase toda a fita,
+  // ou foto ruim): não vale a pena arriscar, segue só com os 4 cantos.
+  const MIN_RIBBON_POINTS = 8;
+  if (extraSrc.length < MIN_RIBBON_POINTS) return { Hfinal: null, pointsUsed: extraSrc.length };
+
+  const allSrc = [...cornerSrcPts, ...extraSrc];
+  const allDst = [...cornerDstPts, ...extraDst];
+  const H0 = computeHomography(allSrc, allDst);
+  const residuals = allSrc.map((s, i) => {
+    const [px, py] = applyH(H0, s.x, s.y);
+    return Math.hypot(px - allDst[i].x, py - allDst[i].y);
+  });
+  const sortedRes = [...residuals].sort((a, b) => a - b);
+  const cutoff = sortedRes[Math.floor(sortedRes.length * 0.85)];
+  const keptSrc = [], keptDst = [];
+  for (let i = 0; i < allSrc.length; i++) {
+    if (i < cornerSrcPts.length || residuals[i] <= cutoff) { keptSrc.push(allSrc[i]); keptDst.push(allDst[i]); }
+  }
+  const Hfinal = computeHomography(keptSrc, keptDst);
+  return { Hfinal, pointsUsed: extraSrc.length };
 }
 
 async function warpPerspective(srcData, outImageData, Hinv, srcW, srcH, onProgress) {

@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const { AR } = require("./web/lib/aruco.js");
+const Ribbon = require("./web/lib/ribbon.js");
 
 const profilesPath = path.join(__dirname, "web", "mat-profiles.json");
 const config = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
@@ -71,6 +72,22 @@ for (const m of markers) {
   markerGroups += markerGroup(m.id, center, marker_size_mm, isBlack);
 }
 
+// Fita de referência De Bruijn (opcional): faixa fina ao longo da borda com
+// células preto/branco codificando uma sequência única, que o app usa pra
+// refinar a homografia além dos 4 cantos. A sequência é recalculada aqui do
+// zero (não fica salva em lugar nenhum) — o app calcula a MESMA sequência a
+// partir do mesmo profile, então os dois sempre concordam.
+let ribbonGroup = "";
+if (profile.ribbon) {
+  const seqBits = Ribbon.deBruijn(2, profile.ribbon_bits || Ribbon.RIBBON_WINDOW_BITS);
+  const cells = Ribbon.buildRibbonCells(profile, seqBits);
+  let rects = "";
+  for (const c of cells) {
+    rects += `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="${c.bit ? "#ffffff" : "#000000"}"/>`;
+  }
+  ribbonGroup = `<g>${rects}</g>`;
+}
+
 // Logo do MoldeFlat (mesmo desenho do ícone do app: cantos de mira + quadrado central),
 // escalada pra milímetros. viewBox nativo 0 0 512 512.
 function moldeFlatLogo(x, y, sizeMm) {
@@ -127,6 +144,7 @@ const svgDoc = `<?xml version="1.0" encoding="UTF-8"?>
   <rect x="0" y="0" width="${width_mm}" height="${height_mm}" fill="${bgFill}" />
   <rect x="1" y="1" width="${width_mm - 2}" height="${height_mm - 2}" fill="none"
         stroke="${borderStroke}" stroke-width="1" stroke-dasharray="6 4" />
+  ${ribbonGroup}
   ${markerGroups}
   ${footerBlocks}
 </svg>
