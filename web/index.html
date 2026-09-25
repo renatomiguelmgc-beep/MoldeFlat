@@ -18,6 +18,25 @@
 </head>
 <body>
 
+<!-- Tela de login — some assim que a sessão é validada (ver auth.js) -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <img src="icons/v2/icon-192.png" alt="" class="login-logo" />
+    <h1>MoldeFlat</h1>
+    <p class="subtitle">Entre para continuar</p>
+    <form id="loginForm">
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="username" required />
+      <label for="loginPassword">Senha</label>
+      <input id="loginPassword" type="password" autocomplete="current-password" required />
+      <p id="loginError" class="login-error hidden"></p>
+      <button type="submit" id="btnLogin" class="btn btn-primary login-submit">Entrar</button>
+    </form>
+  </div>
+</div>
+
+<div id="appRoot" class="hidden">
+
 <!-- Banner de instalação (aparece via JS quando faz sentido) -->
 <div id="installBanner" class="install-banner hidden">
   <img src="icons/v2/icon-192.png" alt="" class="install-icon" />
@@ -35,6 +54,7 @@
     <h1>MoldeFlat</h1>
     <p class="subtitle">Foto do molde → imagem sem distorção, em escala real</p>
   </div>
+  <button id="btnLogout" class="btn btn-ghost btn-sm logout-btn">Sair</button>
 </header>
 
 <main id="app">
@@ -120,9 +140,12 @@
   <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
 </footer>
 
+</div>
+
 <script src="lib/cv.js"></script>
 <script src="lib/aruco.js"></script>
 <script src="lib/ribbon.js"></script>
 <script src="app.js"></script>
+<script src="auth.js"></script>
 </body>
 </html>

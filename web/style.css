@@ -31,6 +31,49 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ---------- Login ---------- */
+
+.login-screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+.login-card {
+  width: 100%;
+  max-width: 360px;
+  background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  text-align: center;
+}
+.login-logo { width: 56px; height: 56px; border-radius: 14px; margin-bottom: 10px; box-shadow: 0 6px 18px rgba(79, 140, 255, 0.35); }
+.login-card h1 { margin: 0 0 2px; font-size: 1.3rem; }
+.login-card .subtitle { margin: 0 0 20px; }
+.login-card form { display: flex; flex-direction: column; gap: 10px; text-align: left; }
+.login-card input {
+  width: 100%;
+  font-size: 1rem;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.login-card input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.login-submit { width: 100%; margin-top: 8px; }
+.login-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.login-error.hidden { display: none; }
+
 /* ---------- Header ---------- */
 
 .topbar {
@@ -41,6 +84,7 @@ body {
   max-width: 640px;
   margin: 0 auto;
 }
+.logout-btn { margin-left: auto; flex-shrink: 0; }
 .topbar .logo {
   width: 44px;
   height: 44px;

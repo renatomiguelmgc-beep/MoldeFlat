@@ -834,6 +834,10 @@ if ("serviceWorker" in navigator) {
 
 /* ------------------------------------------------------------------ */
 
-loadProfiles().catch((err) => {
-  alert("Erro ao carregar os perfis do tapete (mat-profiles.json): " + err.message);
-});
+// Chamado pelo auth.js depois que o login é confirmado (não roda sozinho —
+// o app só começa a carregar depois que a sessão é validada).
+window.MoldeFlatInit = function MoldeFlatInit() {
+  loadProfiles().catch((err) => {
+    alert("Erro ao carregar os perfis do tapete (mat-profiles.json): " + err.message);
+  });
+};
