@@ -4,6 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
+const APP_VERSION = "2026-10-02.3";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -187,6 +188,7 @@ function setProgress(fraction) {
 async function detectProfileMarkers(srcW, srcH) {
   const wanted = new Set(currentProfile.markers.map((m) => m.id));
   const found = new Map(); // id -> { id, corners (px da foto original) }
+  const debug = { scales: [], rawQuads: [] };
   const perimeter = (cs) => cs.reduce((a, c, i) => a + Math.hypot(cs[(i + 1) % 4].x - c.x, cs[(i + 1) % 4].y - c.y), 0);
   const detector = new AR.Detector({ dictionaryName: matConfig.dictionary });
   const longSide = Math.max(srcW, srcH);
@@ -209,19 +211,23 @@ async function detectProfileMarkers(srcW, srcH) {
       setStatus("Procurando marcadores em maior resolução...");
       await nextFrame();
     }
-    for (const m of detector.detect(imageData)) {
+    const dets = detector.detect(imageData);
+    debug.scales.push({ side: Math.max(dW, dH), ids: dets.map((m) => m.id) });
+    for (const m of dets) {
+      debug.rawQuads.push({ id: m.id, corners: m.corners.map((c) => ({ x: c.x / scale, y: c.y / scale })) });
       if (!wanted.has(m.id)) continue;
       const corners = m.corners.map((c) => ({ x: c.x / scale, y: c.y / scale }));
       const prev = found.get(m.id);
       if (!prev || perimeter(corners) > perimeter(prev.corners)) found.set(m.id, { id: m.id, corners });
     }
   }
-  return found;
+  return { found, debug };
 }
 
 async function processImage() {
   stepProcess.classList.remove("hidden");
   stepResult.classList.add("hidden");
+  if (el("diagCanvas")) el("diagCanvas").classList.add("hidden");
   stepProcess.scrollIntoView({ behavior: "smooth", block: "start" });
   setProgress(0.05);
 
@@ -239,9 +245,9 @@ async function processImage() {
   // Os cantos já vêm em coordenadas da foto original (resolução total),
   // independente da escala em que cada tentativa de detecção rodou.
   const scaleDetect = 1;
-  let found;
+  let found, detectDebug;
   try {
-    found = await detectProfileMarkers(srcW, srcH);
+    ({ found, debug: detectDebug } = await detectProfileMarkers(srcW, srcH));
   } catch (err) {
     setStatus("Erro ao detectar marcadores: " + err.message, "error");
     setProgress(0);
@@ -258,9 +264,11 @@ async function processImage() {
       `Só encontrei ${usedMarkers.length} de ${currentProfile.markers.length} marcadores ` +
       `(preciso de pelo menos ${MIN_MARKERS_REQUIRED}). ` +
       `Faltando: ID ${missingIds.join(", ID ")}. ` +
-      `Tente novamente com mais marcadores da borda visíveis, bem iluminados e sem reflexo.`,
+      `Tente novamente com mais marcadores da borda visíveis, bem iluminados e sem reflexo. ` +
+      `[v${APP_VERSION} · foto ${srcW}x${srcH} · tentativas: ${detectDebug.scales.map((t) => t.side + "px→" + (t.ids.length ? t.ids.join(",") : "nenhum")).join(" | ")}]`,
       "error"
     );
+    drawDetectionDiagnostic(found, detectDebug);
     setProgress(0);
     return;
   }
@@ -368,6 +376,34 @@ async function processImage() {
   stepResult.classList.remove("hidden");
   stepResult.scrollIntoView({ behavior: "smooth", block: "start" });
   setupDownloadShare(finalCanvas);
+}
+
+// Em caso de falha, mostra a foto com o que foi detectado (verde = marcador do
+// tapete, vermelho = detecção com ID que não é do tapete) pra dar pra ver
+// o que o app está enxergando.
+function drawDetectionDiagnostic(found, debug) {
+  const cv = el("diagCanvas");
+  if (!cv) return;
+  const maxW = 900;
+  const k = Math.min(1, maxW / sourceCanvas.width);
+  cv.width = Math.round(sourceCanvas.width * k);
+  cv.height = Math.round(sourceCanvas.height * k);
+  const ctx = cv.getContext("2d");
+  ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
+  ctx.lineWidth = 3;
+  ctx.font = "bold 18px Arial";
+  const draw = (corners, color, label) => {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    corners.forEach((c, i) => (i ? ctx.lineTo(c.x * k, c.y * k) : ctx.moveTo(c.x * k, c.y * k)));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillText(label, corners[0].x * k + 4, corners[0].y * k - 4);
+  };
+  for (const q of debug.rawQuads) if (!found.has(q.id)) draw(q.corners, "#ff4d4d", "?" + q.id);
+  for (const m of found.values()) draw(m.corners, "#35d68a", "ID " + m.id);
+  cv.classList.remove("hidden");
 }
 
 function markerCenter(corners) {
