@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-02.5";
+const APP_VERSION = "2026-10-02.6";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -139,9 +139,12 @@ function stopCamera() {
   document.body.classList.remove("camera-mode");
 }
 
-function captureFromVideo() {
+let presetMarkers = null;
+
+function captureFromVideo(liveFound) {
   const w = video.videoWidth;
   const h = video.videoHeight;
+  presetMarkers = liveFound instanceof Map ? { found: liveFound, w, h } : null;
   sourceCanvas.width = w;
   sourceCanvas.height = h;
   sourceCanvas.getContext("2d").drawImage(video, 0, 0, w, h);
@@ -171,6 +174,7 @@ const LIVE_MIN_MARKER_PX = 55;     // marcador menor que isso (px da câmera) = 
 const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da borda que isso = cortado
 const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
 const LIVE_MAX_MOVE_PX = 10;       // movimento médio entre análises (px da câmera) acima disso = tremendo
+let LIVE_TARGET_ERR_PCT = 0.5;     // erro estimado de calibração (%) máximo pra capturar sozinho
 const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
 
 try {
@@ -186,6 +190,7 @@ let liveTimer = null;
 let liveActive = false;
 let liveGoodCount = 0;
 let liveBadStreak = 0;
+let liveErrHistory = [];
 let livePrevCenters = null;
 let liveDetector = null;
 
@@ -194,6 +199,7 @@ function startLiveAnalysis() {
   liveActive = true;
   liveGoodCount = 0;
   liveBadStreak = 0;
+  liveErrHistory = [];
   livePrevCenters = null;
   setLiveHint("bad", "Iniciando câmera…", "v" + APP_VERSION);
   liveTimer = setTimeout(liveTick, 300);
@@ -301,6 +307,31 @@ function evaluateLiveFrameCore(found, vw, vh, m) {
   return { level: "good", ok: true, text: "" };
 }
 
+// Estimativa do erro de calibração (%) do quadro atual: ajusta a homografia pelos
+// centros dos marcadores e mede o tamanho dos marcadores já corrigidos contra o
+// tamanho real — a mesma autoverificação do resultado final (sem a fita).
+function liveCalibrationErrorPct(found) {
+  const used = currentProfile.markers.filter((m) => found.has(m.id));
+  if (used.length < MIN_MARKERS_REQUIRED) return null;
+  const src = [], dst = [];
+  for (const m of used) {
+    src.push(markerCenter(found.get(m.id).corners));
+    dst.push(markerRealXY(m, currentProfile));
+  }
+  let H;
+  try { H = computeHomography(src, dst); } catch (e) { return null; }
+  const dict = new AR.Dictionary(matConfig.dictionary);
+  const detectableMm = (currentProfile.marker_size_mm * dict.markSize) / (dict.markSize + 2);
+  let worst = 0;
+  for (const m of used) {
+    const t = found.get(m.id).corners.map((c) => applyH(H, c.x, c.y));
+    let sum = 0;
+    for (let i = 0; i < 4; i++) sum += Math.hypot(t[(i + 1) % 4][0] - t[i][0], t[(i + 1) % 4][1] - t[i][1]);
+    worst = Math.max(worst, Math.abs((sum / 4 - detectableMm) / detectableMm) * 100);
+  }
+  return worst;
+}
+
 function drawLiveOverlay(found, vw, vh, color) {
   if (liveOverlay.width !== vw || liveOverlay.height !== vh) {
     liveOverlay.width = vw;
@@ -356,28 +387,45 @@ async function liveTick() {
     (result.m.side != null ? ` · marcador ${result.m.side}px` : "") +
     (result.m.skew != null ? ` · inclinação ${result.m.skew}%` : "") +
     (result.m.move != null ? ` · mov ${result.m.move}px` : "");
-  if (result.ok) { liveGoodCount++; liveBadStreak = 0; }
-  else {
+  let avgErr = null;
+  if (result.ok) {
+    liveGoodCount++;
+    liveBadStreak = 0;
+    const e = liveCalibrationErrorPct(found);
+    if (e != null) {
+      liveErrHistory.push(e);
+      if (liveErrHistory.length > LIVE_STABLE_FRAMES) liveErrHistory.shift();
+      avgErr = liveErrHistory.reduce((a, b) => a + b, 0) / liveErrHistory.length;
+    }
+  } else {
     liveBadStreak++;
     // um quadro ruim isolado (detecção falhou 1x) não zera a contagem
-    if (liveBadStreak >= 2) liveGoodCount = 0;
+    if (liveBadStreak >= 2) { liveGoodCount = 0; liveErrHistory = []; }
     if (result.level === "bad") livePrevCenters = null;
   }
+  const errOk = avgErr != null && liveErrHistory.length >= LIVE_STABLE_FRAMES && avgErr <= LIVE_TARGET_ERR_PCT;
+  const errStr = avgErr != null ? avgErr.toFixed(2).replace(".", ",") + "%" : "…";
+  const metaStr = LIVE_TARGET_ERR_PCT.toString().replace(".", ",") + "%";
 
   const overlayColor = result.ok ? "#35d68a" : (result.level === "warn" ? "#ffc400" : "#ff6b6b");
   drawLiveOverlay(found, vw, vh, overlayColor);
 
   if (result.ok) {
-    if (autoCaptureToggle.checked) {
+    if (!errOk) {
+      // geometria ok, mas o erro estimado ainda não chegou na meta
+      setLiveHint("warn",
+        `Quase lá — erro estimado ${errStr} (meta até ${metaStr}). Segure reto e firme, ajuste a distância e evite reflexo nos marcadores`,
+        detail + ` · erro ${errStr}`);
+    } else if (autoCaptureToggle.checked) {
       if (liveGoodCount >= LIVE_STABLE_FRAMES) {
-        setLiveHint("good", "Perfeito! Capturando…", detail);
+        setLiveHint("good", `Perfeito! Erro ${errStr} — capturando…`, detail + ` · erro ${errStr}`);
         if (navigator.vibrate) navigator.vibrate(60);
-        captureFromVideo();
+        captureFromVideo(found);
         return;
       }
-      setLiveHint("good", `Perfeito! Segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`, detail);
+      setLiveHint("good", `Perfeito! Erro ${errStr} — segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`, detail + ` · erro ${errStr}`);
     } else {
-      setLiveHint("good", "Foto ajustada — pode tirar a foto", detail);
+      setLiveHint("good", `Foto ajustada (erro ${errStr}) — pode tirar a foto`, detail + ` · erro ${errStr}`);
     }
   } else {
     setLiveHint(result.level, result.text, detail);
@@ -485,8 +533,16 @@ async function processImage() {
   // independente da escala em que cada tentativa de detecção rodou.
   const scaleDetect = 1;
   let found, detectDebug;
+  const preset = presetMarkers;
+  presetMarkers = null;
   try {
-    ({ found, debug: detectDebug } = await detectProfileMarkers(srcW, srcH));
+    if (preset && preset.w === srcW && preset.h === srcH && preset.found.size >= currentProfile.markers.length) {
+      // captura automática: usa os marcadores já medidos no quadro analisado ao vivo
+      found = preset.found;
+      detectDebug = { scales: [], rawQuads: [] };
+    } else {
+      ({ found, debug: detectDebug } = await detectProfileMarkers(srcW, srcH));
+    }
   } catch (err) {
     setStatus("Erro ao detectar marcadores: " + err.message, "error");
     setProgress(0);
