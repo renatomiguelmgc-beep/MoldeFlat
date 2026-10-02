@@ -134,7 +134,31 @@
     <div class="result-actions">
       <button id="btnDownload" class="btn btn-primary">⬇ Baixar imagem</button>
       <button id="btnShare" class="btn btn-secondary hidden">Compartilhar</button>
-      <button id="btnRetry" class="btn btn-ghost">Nova foto</button>
+      <button id="btnRetry" class="btn btn-ghost">Refazer esta foto</button>
+    </div>
+
+    <div class="more-question">
+      <h3>Tem mais moldes para fotografar?</h3>
+      <div class="result-actions">
+        <button id="btnMoreYes" class="btn btn-primary">Sim, fotografar outro</button>
+        <button id="btnMoreNo" class="btn btn-secondary">Não, terminei</button>
+      </div>
+      <p class="hint">Ao responder, esta foto fica guardada no aparelho junto com as anteriores, e você envia todas de uma vez.</p>
+    </div>
+  </section>
+
+  <!-- Lote: todas as fotos aprovadas nesta sessão (guardadas no aparelho) -->
+  <section id="step-batch" class="step hidden">
+    <div class="step-head">
+      <span class="step-badge step-badge-ok">★</span>
+      <h2 id="batchTitle">Fotos guardadas</h2>
+    </div>
+    <div id="batchList" class="batch-list"></div>
+    <div class="result-actions">
+      <button id="btnBatchShare" class="btn btn-primary">Compartilhar todas</button>
+      <button id="btnBatchZip" class="btn btn-secondary">Baixar todas (.zip)</button>
+      <button id="btnBatchMore" class="btn btn-secondary">Fotografar outro molde</button>
+      <button id="btnBatchClear" class="btn btn-ghost">Apagar tudo</button>
     </div>
   </section>
 
@@ -142,15 +166,15 @@
 
 <footer class="footer">
   <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
-  <p>versão 2026-10-02.6</p>
+  <p>versão 2026-10-02.7</p>
 </footer>
 
 </div>
 
-<script src="lib/cv.js?v=2026-10-02.6"></script>
-<script src="lib/aruco.js?v=2026-10-02.6"></script>
-<script src="lib/ribbon.js?v=2026-10-02.6"></script>
-<script src="app.js?v=2026-10-02.6"></script>
-<script src="auth.js?v=2026-10-02.6"></script>
+<script src="lib/cv.js?v=2026-10-02.7"></script>
+<script src="lib/aruco.js?v=2026-10-02.7"></script>
+<script src="lib/ribbon.js?v=2026-10-02.7"></script>
+<script src="app.js?v=2026-10-02.7"></script>
+<script src="auth.js?v=2026-10-02.7"></script>
 </body>
 </html>

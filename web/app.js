@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-02.6";
+const APP_VERSION = "2026-10-02.7";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -174,7 +174,7 @@ const LIVE_MIN_MARKER_PX = 55;     // marcador menor que isso (px da câmera) = 
 const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da borda que isso = cortado
 const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
 const LIVE_MAX_MOVE_PX = 10;       // movimento médio entre análises (px da câmera) acima disso = tremendo
-let LIVE_TARGET_ERR_PCT = 0.5;     // erro estimado de calibração (%) máximo pra capturar sozinho
+let LIVE_TARGET_ERR_PCT = 0.8;     // erro estimado de calibração (%) máximo pra capturar sozinho
 const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
 
 try {
@@ -671,6 +671,9 @@ async function processImage() {
   stepResult.classList.remove("hidden");
   stepResult.scrollIntoView({ behavior: "smooth", block: "start" });
   setupDownloadShare(finalCanvas);
+  currentResult = { canvas: finalCanvas, profileName: currentProfile.nome, errPct: calibration.maxAbsErrorPct };
+  btnMoreYes.disabled = false;
+  btnMoreNo.disabled = false;
 }
 
 // Em caso de falha, mostra a foto com o que foi detectado (verde = marcador do
@@ -1120,10 +1123,256 @@ function setupDownloadShare(canvas) {
 }
 
 btnRetry.addEventListener("click", () => {
+  currentResult = null; // refazer: descarta esta foto (não vai pro lote)
   stepResult.classList.add("hidden");
   stepProcess.classList.add("hidden");
   openCamera(false);
 });
+
+/* ------------------------------------------------------------------ *
+ * Lote de fotos: guarda cada foto aprovada (no aparelho, em IndexedDB —
+ * sobrevive a fechar/recarregar o app) e envia/baixa tudo de uma vez.
+ * ------------------------------------------------------------------ */
+
+const btnMoreYes = el("btnMoreYes");
+const btnMoreNo = el("btnMoreNo");
+const batchSection = el("step-batch");
+const batchTitle = el("batchTitle");
+const batchList = el("batchList");
+const btnBatchShare = el("btnBatchShare");
+const btnBatchZip = el("btnBatchZip");
+const btnBatchMore = el("btnBatchMore");
+const btnBatchClear = el("btnBatchClear");
+
+let currentResult = null; // { canvas, profileName, errPct } da foto que está na tela de resultado
+let batch = [];           // { id, seq, name, blob, thumbUrl, profile, errPct }
+let memoryOnlyId = 0;
+
+const DB_NAME = "moldeflat";
+const DB_STORE = "photos";
+let dbPromise = null;
+
+function getDb() {
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE, { keyPath: "id", autoIncrement: true });
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+        req.onblocked = () => resolve(null);
+      } catch (e) { resolve(null); }
+    });
+  }
+  return dbPromise;
+}
+async function dbRun(mode, fn) {
+  const db = await getDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const store = db.transaction(DB_STORE, mode).objectStore(DB_STORE);
+      const req = fn(store);
+      req.onsuccess = () => resolve(req.result === undefined ? true : req.result);
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+const dbAll = async () => (await dbRun("readonly", (st) => st.getAll())) || [];
+const dbAdd = (rec) => dbRun("readwrite", (st) => st.add(rec));
+const dbDelete = (id) => dbRun("readwrite", (st) => st.delete(id));
+const dbClear = () => dbRun("readwrite", (st) => st.clear());
+
+function makeThumb(canvas) {
+  const t = document.createElement("canvas");
+  t.width = 240;
+  t.height = Math.round(canvas.height * (240 / canvas.width));
+  t.getContext("2d").drawImage(canvas, 0, 0, t.width, t.height);
+  return new Promise((res) => t.toBlob(res, "image/jpeg", 0.7));
+}
+
+function fileStamp(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function addToBatchList(rec) {
+  batch.push({
+    id: rec.id, seq: rec.seq, name: rec.name, blob: rec.blob,
+    thumbUrl: URL.createObjectURL(rec.thumb), profile: rec.profile, errPct: rec.errPct,
+  });
+}
+
+async function saveCurrentToBatch() {
+  if (!currentResult) return;
+  const r = currentResult;
+  currentResult = null;
+  const blob = await new Promise((res) => r.canvas.toBlob(res, "image/png"));
+  const thumb = await makeThumb(r.canvas);
+  const seq = batch.reduce((m, b) => Math.max(m, b.seq), 0) + 1;
+  const name = `molde_${String(seq).padStart(2, "0")}_${fileStamp(new Date())}.png`;
+  const rec = { seq, name, blob, thumb, profile: r.profileName, errPct: r.errPct, createdAt: Date.now() };
+  const id = await dbAdd(rec);
+  rec.id = id != null ? id : --memoryOnlyId; // sem IndexedDB: fica só na memória da sessão
+  addToBatchList(rec);
+  renderBatch();
+}
+
+async function loadBatch() {
+  const recs = (await dbAll()).sort((a, b) => a.seq - b.seq);
+  for (const rec of recs) addToBatchList(rec);
+  renderBatch();
+}
+
+function renderBatch() {
+  batchList.innerHTML = "";
+  for (const b of batch) {
+    const item = document.createElement("div");
+    item.className = "batch-item";
+    const img = document.createElement("img");
+    img.src = b.thumbUrl;
+    img.alt = b.name;
+    const label = document.createElement("span");
+    label.textContent = "#" + String(b.seq).padStart(2, "0") + " · " + b.errPct.toFixed(2).replace(".", ",") + "%";
+    const del = document.createElement("button");
+    del.className = "batch-del";
+    del.type = "button";
+    del.setAttribute("aria-label", "Remover foto " + b.seq);
+    del.textContent = "×";
+    del.addEventListener("click", () => removeFromBatch(b.id));
+    item.append(img, label, del);
+    batchList.appendChild(item);
+  }
+  batchTitle.textContent = "Fotos guardadas (" + batch.length + ")";
+  batchSection.classList.toggle("hidden", batch.length === 0);
+}
+
+async function removeFromBatch(id) {
+  const b = batch.find((x) => x.id === id);
+  if (!b || !confirm("Remover a foto #" + b.seq + " do lote?")) return;
+  await dbDelete(id);
+  URL.revokeObjectURL(b.thumbUrl);
+  batch = batch.filter((x) => x.id !== id);
+  renderBatch();
+}
+
+async function answerMore(more) {
+  btnMoreYes.disabled = true;
+  btnMoreNo.disabled = true;
+  try { await saveCurrentToBatch(); } catch (e) { /* segue mesmo assim */ }
+  stepResult.classList.add("hidden");
+  stepProcess.classList.add("hidden");
+  if (more) openCamera(false);
+  else batchSection.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+btnMoreYes.addEventListener("click", () => answerMore(true));
+btnMoreNo.addEventListener("click", () => answerMore(false));
+
+btnBatchMore.addEventListener("click", () => {
+  stepResult.classList.add("hidden");
+  stepProcess.classList.add("hidden");
+  openCamera(false);
+});
+
+btnBatchShare.addEventListener("click", async () => {
+  const files = batch.map((b) => new File([b.blob], b.name, { type: "image/png" }));
+  if (!files.length) return;
+  if (!(navigator.canShare && navigator.canShare({ files }))) {
+    alert("Este navegador não consegue compartilhar várias fotos de uma vez. Use \"Baixar todas (.zip)\".");
+    return;
+  }
+  try {
+    await navigator.share({ files, title: "Moldes digitalizados (" + files.length + ")" });
+  } catch (e) {
+    if (e && e.name !== "AbortError") alert("Não foi possível compartilhar: " + e.message);
+  }
+});
+
+btnBatchZip.addEventListener("click", async () => {
+  if (!batch.length) return;
+  const zip = await buildZip(batch.map((b) => ({ name: b.name, blob: b.blob })));
+  const url = URL.createObjectURL(zip);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "moldes_" + fileStamp(new Date()) + ".zip";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+});
+
+btnBatchClear.addEventListener("click", async () => {
+  if (!batch.length || !confirm("Apagar as " + batch.length + " fotos guardadas? Isso não pode ser desfeito.")) return;
+  await dbClear();
+  for (const b of batch) URL.revokeObjectURL(b.thumbUrl);
+  batch = [];
+  renderBatch();
+});
+
+/* ZIP-BEGIN — gerador de .zip simples (sem compressão: PNG já é comprimido) */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(data) {
+  let c = 0xffffffff;
+  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+async function buildZip(files) {
+  const enc = new TextEncoder();
+  const d = new Date();
+  const dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const data = new Uint8Array(await f.blob.arrayBuffer());
+    const name = enc.encode(f.name);
+    const crc = crc32(data);
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0x0800, true);
+    lh.setUint16(8, 0, true);
+    lh.setUint16(10, dosTime, true);
+    lh.setUint16(12, dosDate, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, data.length, true);
+    lh.setUint32(22, data.length, true);
+    lh.setUint16(26, name.length, true);
+    lh.setUint16(28, 0, true);
+    parts.push(lh, name, data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true);
+    ch.setUint16(4, 20, true);
+    ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true);
+    ch.setUint16(12, dosTime, true);
+    ch.setUint16(14, dosDate, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, data.length, true);
+    ch.setUint32(24, data.length, true);
+    ch.setUint16(28, name.length, true);
+    ch.setUint32(42, offset, true);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const centralSize = central.reduce((n, p) => n + (p.byteLength !== undefined ? p.byteLength : p.length), 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, end], { type: "application/zip" });
+}
+/* ZIP-END */
 
 /* ------------------------------------------------------------------ *
  * Instalar como app (tela inicial)
@@ -1199,6 +1448,7 @@ if ("serviceWorker" in navigator) {
 // Chamado pelo auth.js depois que o login é confirmado (não roda sozinho —
 // o app só começa a carregar depois que a sessão é validada).
 window.MoldeFlatInit = function MoldeFlatInit() {
+  loadBatch().catch(() => {});
   loadProfiles().catch((err) => {
     alert("Erro ao carregar os perfis do tapete (mat-profiles.json): " + err.message);
   });
