@@ -259,6 +259,45 @@ select {
   filter: drop-shadow(0 0 3px rgba(79,140,255,0.8));
 }
 
+/* ---------- Análise ao vivo da câmera ---------- */
+
+.live-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* mesmo enquadramento do <video>, pra o contorno bater com a imagem */
+  pointer-events: none;
+}
+.live-hint {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: max(12px, env(safe-area-inset-top));
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+  color: #fff;
+  z-index: 102;
+}
+.live-hint.level-bad { background: rgba(220, 60, 60, 0.9); }
+.live-hint.level-warn { background: rgba(255, 196, 0, 0.92); color: #2a2200; }
+.live-hint.level-good { background: rgba(30, 170, 105, 0.92); }
+.live-toggle {
+  flex-basis: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-size: 0.9rem;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+.live-toggle input { width: 18px; height: 18px; }
+
 /* ---------- Modo câmera em tela cheia ---------- */
 /* Quando a câmera abre, some tudo o mais e fica só o preview + os controles
    de captura, ocupando a tela inteira (sem instalar banner, header, cards). */

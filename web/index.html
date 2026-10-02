@@ -88,8 +88,11 @@
         <svg class="frame-guide" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
           <path d="M 6 20 L 6 6 L 20 6 M 80 6 L 94 6 L 94 20 M 94 80 L 94 94 L 80 94 M 20 94 L 6 94 L 6 80" />
         </svg>
+        <canvas id="liveOverlay" class="live-overlay"></canvas>
+        <div id="liveHint" class="live-hint level-bad hidden"></div>
       </div>
       <div class="camera-actions">
+        <label class="live-toggle"><input type="checkbox" id="autoCaptureToggle" checked /> Captura automática</label>
         <button id="btnShot" class="btn btn-primary">📷 Capturar foto</button>
         <button id="btnStopCamera" class="btn btn-ghost">Cancelar</button>
       </div>
@@ -139,15 +142,15 @@
 
 <footer class="footer">
   <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
-  <p>versão 2026-10-02.3</p>
+  <p>versão 2026-10-02.4</p>
 </footer>
 
 </div>
 
-<script src="lib/cv.js?v=2026-10-02.3"></script>
-<script src="lib/aruco.js?v=2026-10-02.3"></script>
-<script src="lib/ribbon.js?v=2026-10-02.3"></script>
-<script src="app.js?v=2026-10-02.3"></script>
-<script src="auth.js?v=2026-10-02.3"></script>
+<script src="lib/cv.js?v=2026-10-02.4"></script>
+<script src="lib/aruco.js?v=2026-10-02.4"></script>
+<script src="lib/ribbon.js?v=2026-10-02.4"></script>
+<script src="app.js?v=2026-10-02.4"></script>
+<script src="auth.js?v=2026-10-02.4"></script>
 </body>
 </html>

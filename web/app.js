@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-02.3";
+const APP_VERSION = "2026-10-02.4";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -121,6 +121,7 @@ async function openCamera(silent = true) {
     video.srcObject = mediaStream;
     cameraWrap.classList.remove("hidden");
     document.body.classList.add("camera-mode");
+    startLiveAnalysis();
   } catch (err) {
     if (!silent) alert("Não foi possível abrir a câmera: " + err.message);
   }
@@ -129,6 +130,7 @@ async function openCamera(silent = true) {
 btnStopCamera.addEventListener("click", stopCamera);
 
 function stopCamera() {
+  stopLiveAnalysis();
   if (mediaStream) {
     mediaStream.getTracks().forEach((t) => t.stop());
     mediaStream = null;
@@ -137,7 +139,7 @@ function stopCamera() {
   document.body.classList.remove("camera-mode");
 }
 
-btnShot.addEventListener("click", () => {
+function captureFromVideo() {
   const w = video.videoWidth;
   const h = video.videoHeight;
   sourceCanvas.width = w;
@@ -145,7 +147,212 @@ btnShot.addEventListener("click", () => {
   sourceCanvas.getContext("2d").drawImage(video, 0, 0, w, h);
   stopCamera();
   processImage();
+}
+
+btnShot.addEventListener("click", captureFromVideo);
+
+/* ------------------------------------------------------------------ *
+ * Análise ao vivo + captura automática
+ *
+ * Com a câmera aberta, analisa o quadro ~6x por segundo: acha os 4
+ * marcadores, confere enquadramento, distância, inclinação do celular
+ * (marcadores devem aparecer do mesmo tamanho) e firmeza (marcadores
+ * parados). Mostra o que ajustar; quando tudo estiver ok por alguns
+ * quadros seguidos, tira a foto sozinho (se "Captura automática" ligada).
+ * ------------------------------------------------------------------ */
+
+const liveOverlay = el("liveOverlay");
+const liveHint = el("liveHint");
+const autoCaptureToggle = el("autoCaptureToggle");
+const AUTO_CAPTURE_KEY = "moldeflat_auto_capture";
+
+const LIVE_DETECT_SIDE = 1280;     // lado maior da cópia usada na análise
+const LIVE_MIN_MARKER_PX = 55;     // marcador menor que isso (px da câmera) = longe demais
+const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da borda que isso = cortado
+const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
+const LIVE_MAX_MOVE_PX = 5;        // movimento médio entre análises (px da câmera) acima disso = tremendo
+const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
+
+try {
+  const saved = localStorage.getItem(AUTO_CAPTURE_KEY);
+  if (saved !== null) autoCaptureToggle.checked = saved === "1";
+} catch (e) { /* sem storage: fica no padrão (ligado) */ }
+autoCaptureToggle.addEventListener("change", () => {
+  try { localStorage.setItem(AUTO_CAPTURE_KEY, autoCaptureToggle.checked ? "1" : "0"); } catch (e) { /* ok */ }
 });
+
+const liveCanvas = document.createElement("canvas");
+let liveTimer = null;
+let liveActive = false;
+let liveGoodCount = 0;
+let livePrevCenters = null;
+let liveDetector = null;
+
+function startLiveAnalysis() {
+  stopLiveAnalysis();
+  liveActive = true;
+  liveGoodCount = 0;
+  livePrevCenters = null;
+  setLiveHint("bad", "Iniciando câmera…");
+  liveTimer = setTimeout(liveTick, 300);
+}
+
+function stopLiveAnalysis() {
+  liveActive = false;
+  clearTimeout(liveTimer);
+  liveTimer = null;
+  liveHint.classList.add("hidden");
+  const ctx = liveOverlay.getContext("2d");
+  ctx.clearRect(0, 0, liveOverlay.width, liveOverlay.height);
+}
+
+function setLiveHint(level, text) {
+  liveHint.className = "live-hint level-" + level;
+  liveHint.textContent = text;
+}
+
+function markerSidePx(corners) {
+  let sum = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    sum += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  return sum / 4;
+}
+
+// Devolve { level, text, ok } para os marcadores achados no quadro (px da câmera).
+function evaluateLiveFrame(found, vw, vh) {
+  const markers = currentProfile.markers;
+  const missing = markers.filter((m) => !found.has(m.id)).map((m) => m.id);
+  if (found.size === 0) {
+    return { level: "bad", ok: false, text: "Procurando o tapete… enquadre os 4 marcadores dos cantos" };
+  }
+  if (missing.length) {
+    return {
+      level: "bad", ok: false,
+      text: `Faltam os marcadores ${missing.map((i) => "ID " + i).join(", ")} — enquadre o tapete inteiro (afaste um pouco)`,
+    };
+  }
+
+  const mx = vw * LIVE_EDGE_MARGIN, my = vh * LIVE_EDGE_MARGIN;
+  for (const f of found.values()) {
+    if (f.corners.some((c) => c.x < mx || c.y < my || c.x > vw - mx || c.y > vh - my)) {
+      return { level: "bad", ok: false, text: `Marcador ID ${f.id} quase cortado na borda — centralize o tapete na tela` };
+    }
+  }
+
+  const sides = [...found.values()].map((f) => ({ f, side: markerSidePx(f.corners) }));
+  const minSide = Math.min(...sides.map((x) => x.side));
+  const maxSide = Math.max(...sides.map((x) => x.side));
+  if (minSide < LIVE_MIN_MARKER_PX) {
+    return { level: "bad", ok: false, text: "Aproxime o celular do tapete (marcadores pequenos demais pra medir bem)" };
+  }
+
+  // Câmera paralela ao tapete => os 4 marcadores aparecem do mesmo tamanho.
+  const skew = (maxSide - minSide) / maxSide;
+  if (skew > LIVE_MAX_SKEW) {
+    const far = sides.find((x) => x.side === minSide).f;
+    const c = markerCenter(far.corners);
+    const dx = c.x - vw / 2, dy = c.y - vh / 2;
+    const where = Math.abs(dy) * vw > Math.abs(dx) * vh
+      ? (dy < 0 ? "de cima" : "de baixo")
+      : (dx < 0 ? "esquerdo" : "direito");
+    return {
+      level: "warn", ok: false,
+      text: `Celular inclinado (${(skew * 100).toFixed(0)}%): o lado ${where} da tela está mais longe do tapete — deixe o celular paralelo ao tapete`,
+    };
+  }
+
+  const centers = new Map([...found.values()].map((f) => [f.id, markerCenter(f.corners)]));
+  let move = 0;
+  if (livePrevCenters) {
+    let sum = 0, n = 0;
+    for (const [id, c] of centers) {
+      const p = livePrevCenters.get(id);
+      if (p) { sum += Math.hypot(c.x - p.x, c.y - p.y); n++; }
+    }
+    move = n ? sum / n : 0;
+  }
+  livePrevCenters = centers;
+  if (move > LIVE_MAX_MOVE_PX) {
+    return { level: "warn", ok: false, text: "Segure firme… o celular está se mexendo" };
+  }
+  return { level: "good", ok: true, text: "" };
+}
+
+function drawLiveOverlay(found, vw, vh, color) {
+  if (liveOverlay.width !== vw || liveOverlay.height !== vh) {
+    liveOverlay.width = vw;
+    liveOverlay.height = vh;
+  }
+  const ctx = liveOverlay.getContext("2d");
+  ctx.clearRect(0, 0, vw, vh);
+  ctx.lineWidth = Math.max(3, vw / 300);
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.font = `bold ${Math.round(vw / 40)}px Arial`;
+  for (const f of found.values()) {
+    ctx.beginPath();
+    f.corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillText("ID " + f.id, f.corners[0].x, f.corners[0].y - 6);
+  }
+}
+
+async function liveTick() {
+  if (!liveActive) return;
+  const t0 = performance.now();
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if (!vw || video.readyState < 2) {
+    liveTimer = setTimeout(liveTick, 200);
+    return;
+  }
+
+  const found = new Map();
+  try {
+    const scale = Math.min(1, LIVE_DETECT_SIDE / Math.max(vw, vh));
+    liveCanvas.width = Math.round(vw * scale);
+    liveCanvas.height = Math.round(vh * scale);
+    const ctx = liveCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, liveCanvas.width, liveCanvas.height);
+    const imageData = ctx.getImageData(0, 0, liveCanvas.width, liveCanvas.height);
+    if (!liveDetector) liveDetector = new AR.Detector({ dictionaryName: matConfig.dictionary });
+    const wanted = new Set(currentProfile.markers.map((m) => m.id));
+    for (const m of liveDetector.detect(imageData)) {
+      if (!wanted.has(m.id)) continue;
+      const corners = m.corners.map((c) => ({ x: c.x / scale, y: c.y / scale }));
+      const prev = found.get(m.id);
+      if (!prev || markerSidePx(corners) > markerSidePx(prev.corners)) found.set(m.id, { id: m.id, corners });
+    }
+  } catch (err) { /* quadro ruim: trata como nada achado */ }
+  if (!liveActive) return;
+
+  const result = evaluateLiveFrame(found, vw, vh);
+  if (result.ok) liveGoodCount++;
+  else { liveGoodCount = 0; if (result.level === "bad") livePrevCenters = null; }
+
+  const overlayColor = result.ok ? "#35d68a" : (result.level === "warn" ? "#ffc400" : "#ff6b6b");
+  drawLiveOverlay(found, vw, vh, overlayColor);
+
+  if (result.ok) {
+    if (autoCaptureToggle.checked) {
+      if (liveGoodCount >= LIVE_STABLE_FRAMES) {
+        setLiveHint("good", "Perfeito! Capturando…");
+        if (navigator.vibrate) navigator.vibrate(60);
+        captureFromVideo();
+        return;
+      }
+      setLiveHint("good", `Perfeito! Segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`);
+    } else {
+      setLiveHint("good", "Foto ajustada — pode tirar a foto");
+    }
+  } else {
+    setLiveHint(result.level, result.text);
+  }
+
+  liveTimer = setTimeout(liveTick, Math.max(60, 160 - (performance.now() - t0)));
+}
 
 /* ------------------------------------------------------------------ *
  * Upload de arquivo (também usado pela captura nativa do celular)
