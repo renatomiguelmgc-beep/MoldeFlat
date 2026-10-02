@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const DETECT_MAX_SIDE = 1400;   // downscale para detecção dos marcadores (velocidade)
+const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
 const MIN_MARKERS_REQUIRED = 4;  // mínimo de marcadores visíveis para calibrar (homografia por mínimos quadrados)
@@ -179,6 +179,46 @@ function setProgress(fraction) {
   if (progressFill) progressFill.style.width = Math.round(fraction * 100) + "%";
 }
 
+// Detecta os marcadores do perfil em várias escalas: começa na escala rápida
+// e só tenta resoluções maiores se faltar marcador (em foto de celular, depois de
+// reduzir pra ~1400px o marcador pode ficar pequeno demais pra decodificar).
+// Considera só os IDs do perfil atual: a fita da borda gera falsos marcadores
+// (ids aleatórios) que não podem entrar na calibração.
+async function detectProfileMarkers(srcW, srcH) {
+  const wanted = new Set(currentProfile.markers.map((m) => m.id));
+  const found = new Map(); // id -> { id, corners (px da foto original) }
+  const perimeter = (cs) => cs.reduce((a, c, i) => a + Math.hypot(cs[(i + 1) % 4].x - c.x, cs[(i + 1) % 4].y - c.y), 0);
+  const detector = new AR.Detector({ dictionaryName: matConfig.dictionary });
+  const longSide = Math.max(srcW, srcH);
+  const sides = [DETECT_MAX_SIDE, 2200, 3200];
+  const tried = new Set();
+  for (const side of sides) {
+    const scale = Math.min(1, side / longSide);
+    const key = scale.toFixed(4);
+    if (tried.has(key)) continue;
+    tried.add(key);
+    if (found.size >= wanted.size) break;
+    const dW = Math.round(srcW * scale);
+    const dH = Math.round(srcH * scale);
+    detectCanvas.width = dW;
+    detectCanvas.height = dH;
+    const dctx = detectCanvas.getContext("2d", { willReadFrequently: true });
+    dctx.drawImage(sourceCanvas, 0, 0, dW, dH);
+    const imageData = dctx.getImageData(0, 0, dW, dH);
+    if (side > DETECT_MAX_SIDE) {
+      setStatus("Procurando marcadores em maior resolução...");
+      await nextFrame();
+    }
+    for (const m of detector.detect(imageData)) {
+      if (!wanted.has(m.id)) continue;
+      const corners = m.corners.map((c) => ({ x: c.x / scale, y: c.y / scale }));
+      const prev = found.get(m.id);
+      if (!prev || perimeter(corners) > perimeter(prev.corners)) found.set(m.id, { id: m.id, corners });
+    }
+  }
+  return found;
+}
+
 async function processImage() {
   stepProcess.classList.remove("hidden");
   stepResult.classList.add("hidden");
@@ -191,31 +231,22 @@ async function processImage() {
 
   const srcW = sourceCanvas.width;
   const srcH = sourceCanvas.height;
-  const scaleDetect = Math.min(1, DETECT_MAX_SIDE / Math.max(srcW, srcH));
-  const dW = Math.round(srcW * scaleDetect);
-  const dH = Math.round(srcH * scaleDetect);
-  detectCanvas.width = dW;
-  detectCanvas.height = dH;
-  const dctx = detectCanvas.getContext("2d");
-  dctx.drawImage(sourceCanvas, 0, 0, dW, dH);
-  const imageData = dctx.getImageData(0, 0, dW, dH);
 
   setStatus("Detectando marcadores do tapete...");
   setProgress(0.15);
   await nextFrame();
 
-  let markers;
+  // Os cantos já vêm em coordenadas da foto original (resolução total),
+  // independente da escala em que cada tentativa de detecção rodou.
+  const scaleDetect = 1;
+  let found;
   try {
-    const detector = new AR.Detector({ dictionaryName: matConfig.dictionary });
-    markers = detector.detect(imageData);
+    found = await detectProfileMarkers(srcW, srcH);
   } catch (err) {
     setStatus("Erro ao detectar marcadores: " + err.message, "error");
     setProgress(0);
     return;
   }
-
-  const found = new Map(); // id -> marker
-  for (const m of markers) found.set(m.id, m);
 
   // Só precisamos de MIN_MARKERS_REQUIRED visíveis (não todos) — assim uma peça
   // grande pode cobrir parte do tapete sem quebrar a calibração, desde que
