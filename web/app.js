@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-02.4";
+const APP_VERSION = "2026-10-02.5";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -166,11 +166,11 @@ const liveHint = el("liveHint");
 const autoCaptureToggle = el("autoCaptureToggle");
 const AUTO_CAPTURE_KEY = "moldeflat_auto_capture";
 
-const LIVE_DETECT_SIDE = 1280;     // lado maior da cópia usada na análise
+const LIVE_DETECT_SIDE = 1920;     // lado maior da cópia usada na análise (marcador pequeno demais não é lido)
 const LIVE_MIN_MARKER_PX = 55;     // marcador menor que isso (px da câmera) = longe demais
 const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da borda que isso = cortado
 const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
-const LIVE_MAX_MOVE_PX = 5;        // movimento médio entre análises (px da câmera) acima disso = tremendo
+const LIVE_MAX_MOVE_PX = 10;       // movimento médio entre análises (px da câmera) acima disso = tremendo
 const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
 
 try {
@@ -185,6 +185,7 @@ const liveCanvas = document.createElement("canvas");
 let liveTimer = null;
 let liveActive = false;
 let liveGoodCount = 0;
+let liveBadStreak = 0;
 let livePrevCenters = null;
 let liveDetector = null;
 
@@ -192,8 +193,9 @@ function startLiveAnalysis() {
   stopLiveAnalysis();
   liveActive = true;
   liveGoodCount = 0;
+  liveBadStreak = 0;
   livePrevCenters = null;
-  setLiveHint("bad", "Iniciando câmera…");
+  setLiveHint("bad", "Iniciando câmera…", "v" + APP_VERSION);
   liveTimer = setTimeout(liveTick, 300);
 }
 
@@ -206,9 +208,18 @@ function stopLiveAnalysis() {
   ctx.clearRect(0, 0, liveOverlay.width, liveOverlay.height);
 }
 
-function setLiveHint(level, text) {
+function setLiveHint(level, text, detail) {
   liveHint.className = "live-hint level-" + level;
-  liveHint.textContent = text;
+  liveHint.textContent = "";
+  const main = document.createElement("div");
+  main.textContent = text;
+  liveHint.appendChild(main);
+  if (detail) {
+    const d = document.createElement("div");
+    d.className = "live-detail";
+    d.textContent = detail;
+    liveHint.appendChild(d);
+  }
 }
 
 function markerSidePx(corners) {
@@ -222,6 +233,13 @@ function markerSidePx(corners) {
 
 // Devolve { level, text, ok } para os marcadores achados no quadro (px da câmera).
 function evaluateLiveFrame(found, vw, vh) {
+  const m = { n: found.size };
+  const r = evaluateLiveFrameCore(found, vw, vh, m);
+  r.m = m;
+  return r;
+}
+
+function evaluateLiveFrameCore(found, vw, vh, m) {
   const markers = currentProfile.markers;
   const missing = markers.filter((m) => !found.has(m.id)).map((m) => m.id);
   if (found.size === 0) {
@@ -244,12 +262,14 @@ function evaluateLiveFrame(found, vw, vh) {
   const sides = [...found.values()].map((f) => ({ f, side: markerSidePx(f.corners) }));
   const minSide = Math.min(...sides.map((x) => x.side));
   const maxSide = Math.max(...sides.map((x) => x.side));
+  m.side = Math.round(minSide);
   if (minSide < LIVE_MIN_MARKER_PX) {
     return { level: "bad", ok: false, text: "Aproxime o celular do tapete (marcadores pequenos demais pra medir bem)" };
   }
 
   // Câmera paralela ao tapete => os 4 marcadores aparecem do mesmo tamanho.
   const skew = (maxSide - minSide) / maxSide;
+  m.skew = Math.round(skew * 100);
   if (skew > LIVE_MAX_SKEW) {
     const far = sides.find((x) => x.side === minSide).f;
     const c = markerCenter(far.corners);
@@ -273,6 +293,7 @@ function evaluateLiveFrame(found, vw, vh) {
     }
     move = n ? sum / n : 0;
   }
+  m.move = Math.round(move);
   livePrevCenters = centers;
   if (move > LIVE_MAX_MOVE_PX) {
     return { level: "warn", ok: false, text: "Segure firme… o celular está se mexendo" };
@@ -329,8 +350,19 @@ async function liveTick() {
   if (!liveActive) return;
 
   const result = evaluateLiveFrame(found, vw, vh);
-  if (result.ok) liveGoodCount++;
-  else { liveGoodCount = 0; if (result.level === "bad") livePrevCenters = null; }
+  const elapsed = Math.round(performance.now() - t0);
+  const detail =
+    `v${APP_VERSION} · ${vw}x${vh} · ${elapsed}ms · achados: ${found.size ? [...found.keys()].sort().join(",") : "nenhum"}` +
+    (result.m.side != null ? ` · marcador ${result.m.side}px` : "") +
+    (result.m.skew != null ? ` · inclinação ${result.m.skew}%` : "") +
+    (result.m.move != null ? ` · mov ${result.m.move}px` : "");
+  if (result.ok) { liveGoodCount++; liveBadStreak = 0; }
+  else {
+    liveBadStreak++;
+    // um quadro ruim isolado (detecção falhou 1x) não zera a contagem
+    if (liveBadStreak >= 2) liveGoodCount = 0;
+    if (result.level === "bad") livePrevCenters = null;
+  }
 
   const overlayColor = result.ok ? "#35d68a" : (result.level === "warn" ? "#ffc400" : "#ff6b6b");
   drawLiveOverlay(found, vw, vh, overlayColor);
@@ -338,17 +370,17 @@ async function liveTick() {
   if (result.ok) {
     if (autoCaptureToggle.checked) {
       if (liveGoodCount >= LIVE_STABLE_FRAMES) {
-        setLiveHint("good", "Perfeito! Capturando…");
+        setLiveHint("good", "Perfeito! Capturando…", detail);
         if (navigator.vibrate) navigator.vibrate(60);
         captureFromVideo();
         return;
       }
-      setLiveHint("good", `Perfeito! Segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`);
+      setLiveHint("good", `Perfeito! Segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`, detail);
     } else {
-      setLiveHint("good", "Foto ajustada — pode tirar a foto");
+      setLiveHint("good", "Foto ajustada — pode tirar a foto", detail);
     }
   } else {
-    setLiveHint(result.level, result.text);
+    setLiveHint(result.level, result.text, detail);
   }
 
   liveTimer = setTimeout(liveTick, Math.max(60, 160 - (performance.now() - t0)));

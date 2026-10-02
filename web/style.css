@@ -286,6 +286,7 @@ select {
 .live-hint.level-bad { background: rgba(220, 60, 60, 0.9); }
 .live-hint.level-warn { background: rgba(255, 196, 0, 0.92); color: #2a2200; }
 .live-hint.level-good { background: rgba(30, 170, 105, 0.92); }
+.live-detail { font-size: 0.68rem; font-weight: 400; opacity: 0.85; margin-top: 3px; }
 .live-toggle {
   flex-basis: 100%;
   display: flex;
