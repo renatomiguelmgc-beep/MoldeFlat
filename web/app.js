@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-02.7";
+const APP_VERSION = "2026-10-08.1";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -141,13 +141,15 @@ function stopCamera() {
 
 let presetMarkers = null;
 
-function captureFromVideo(liveFound) {
-  const w = video.videoWidth;
-  const h = video.videoHeight;
+function captureFromVideo(liveFound, frameCanvas) {
+  // frameCanvas: o quadro exato já medido ao vivo (captura automática); sem ele, usa o vídeo agora
+  const fromFrame = frameCanvas instanceof HTMLCanvasElement;
+  const w = fromFrame ? frameCanvas.width : video.videoWidth;
+  const h = fromFrame ? frameCanvas.height : video.videoHeight;
   presetMarkers = liveFound instanceof Map ? { found: liveFound, w, h } : null;
   sourceCanvas.width = w;
   sourceCanvas.height = h;
-  sourceCanvas.getContext("2d").drawImage(video, 0, 0, w, h);
+  sourceCanvas.getContext("2d").drawImage(fromFrame ? frameCanvas : video, 0, 0, w, h);
   stopCamera();
   processImage();
 }
@@ -174,7 +176,8 @@ const LIVE_MIN_MARKER_PX = 55;     // marcador menor que isso (px da câmera) = 
 const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da borda que isso = cortado
 const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
 const LIVE_MAX_MOVE_PX = 10;       // movimento médio entre análises (px da câmera) acima disso = tremendo
-let LIVE_TARGET_ERR_PCT = 0.8;     // erro estimado de calibração (%) máximo pra capturar sozinho
+let LIVE_TARGET_ERR_PCT = 0.8;     // erro de calibração (%, o mesmo do resultado final, com a fita) máximo pra capturar sozinho
+const LIVE_PRECHECK_PCT = 2.5;     // só roda a conta completa (com fita, mais pesada) se a estimativa só com os 4 cantos estiver abaixo disso
 const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
 
 try {
@@ -191,6 +194,8 @@ let liveActive = false;
 let liveGoodCount = 0;
 let liveBadStreak = 0;
 let liveErrHistory = [];
+let liveBestExact = null;
+const liveFullCanvas = document.createElement("canvas");
 let livePrevCenters = null;
 let liveDetector = null;
 
@@ -200,6 +205,7 @@ function startLiveAnalysis() {
   liveGoodCount = 0;
   liveBadStreak = 0;
   liveErrHistory = [];
+  liveBestExact = null;
   livePrevCenters = null;
   setLiveHint("bad", "Iniciando câmera…", "v" + APP_VERSION);
   liveTimer = setTimeout(liveTick, 300);
@@ -332,6 +338,38 @@ function liveCalibrationErrorPct(found) {
   return worst;
 }
 
+// Erro de calibração do quadro atual calculado EXATAMENTE como no resultado final
+// (homografia refinada com a fita + mesma autoverificação). Mais pesado que a
+// estimativa só com os 4 cantos, por isso só roda quando a estimativa já está boa.
+function liveFinalError(found, vw, vh) {
+  try {
+    liveFullCanvas.width = vw;
+    liveFullCanvas.height = vh;
+    const ctx = liveFullCanvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, vw, vh);
+    const used = currentProfile.markers.filter((m) => found.has(m.id));
+    const pxPerMm = OUTPUT_TARGET_LONG / Math.max(currentProfile.width_mm, currentProfile.height_mm);
+    const srcPts = [], dstPts = [];
+    for (const m of used) {
+      const c = markerCenter(found.get(m.id).corners);
+      srcPts.push({ x: c.x, y: c.y });
+      const mm = markerRealXY(m, currentProfile);
+      dstPts.push({ x: mm.x * pxPerMm, y: mm.y * pxPerMm });
+    }
+    const Hrough = computeHomography(srcPts, dstPts);
+    let H = Hrough, ribbonPts = 0;
+    if (currentProfile.ribbon) {
+      const imageData = ctx.getImageData(0, 0, vw, vh);
+      const r = refineHomographyWithRibbon(currentProfile, invert3x3(Hrough), imageData, vw, vh, pxPerMm, srcPts, dstPts);
+      if (r && r.Hfinal) { H = r.Hfinal; ribbonPts = r.pointsUsed; }
+    }
+    const cal = checkCalibrationQuality(H, used, found, 1, pxPerMm, currentProfile.marker_size_mm);
+    return { pct: cal.maxAbsErrorPct, ribbonPts };
+  } catch (e) {
+    return null;
+  }
+}
+
 function drawLiveOverlay(found, vw, vh, color) {
   if (liveOverlay.width !== vw || liveOverlay.height !== vh) {
     liveOverlay.width = vw;
@@ -403,29 +441,44 @@ async function liveTick() {
     if (liveBadStreak >= 2) { liveGoodCount = 0; liveErrHistory = []; }
     if (result.level === "bad") livePrevCenters = null;
   }
-  const errOk = avgErr != null && liveErrHistory.length >= LIVE_STABLE_FRAMES && avgErr <= LIVE_TARGET_ERR_PCT;
-  const errStr = avgErr != null ? avgErr.toFixed(2).replace(".", ",") + "%" : "…";
-  const metaStr = LIVE_TARGET_ERR_PCT.toString().replace(".", ",") + "%";
+  const pc = (v) => v.toFixed(2).replace(".", ",") + "%";
+  const metaStr = pc(LIVE_TARGET_ERR_PCT);
+  const roughStr = avgErr != null ? pc(avgErr) : "…";
 
   const overlayColor = result.ok ? "#35d68a" : (result.level === "warn" ? "#ffc400" : "#ff6b6b");
   drawLiveOverlay(found, vw, vh, overlayColor);
 
   if (result.ok) {
-    if (!errOk) {
-      // geometria ok, mas o erro estimado ainda não chegou na meta
+    const stable = liveGoodCount >= LIVE_STABLE_FRAMES && liveErrHistory.length >= LIVE_STABLE_FRAMES;
+    if (!stable || avgErr == null || avgErr > LIVE_PRECHECK_PCT) {
+      // ainda ajustando: mostra a estimativa rápida (só 4 cantos)
       setLiveHint("warn",
-        `Quase lá — erro estimado ${errStr} (meta até ${metaStr}). Segure reto e firme, ajuste a distância e evite reflexo nos marcadores`,
-        detail + ` · erro ${errStr}`);
-    } else if (autoCaptureToggle.checked) {
-      if (liveGoodCount >= LIVE_STABLE_FRAMES) {
-        setLiveHint("good", `Perfeito! Erro ${errStr} — capturando…`, detail + ` · erro ${errStr}`);
-        if (navigator.vibrate) navigator.vibrate(60);
-        captureFromVideo(found);
-        return;
-      }
-      setLiveHint("good", `Perfeito! Erro ${errStr} — segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`, detail + ` · erro ${errStr}`);
+        stable
+          ? `Ajustando — erro estimado ${roughStr}. Segure reto, ajuste a distância e evite reflexo nos marcadores`
+          : `Boa posição — segure parado… ${liveGoodCount}/${LIVE_STABLE_FRAMES}`,
+        detail + ` · 4 cantos ${roughStr}`);
     } else {
-      setLiveHint("good", `Foto ajustada (erro ${errStr}) — pode tirar a foto`, detail + ` · erro ${errStr}`);
+      setLiveHint("warn", "Medindo com a fita de referência…", detail + ` · 4 cantos ${roughStr}`);
+      const exact = liveFinalError(found, vw, vh);
+      if (!liveActive) return;
+      if (exact) {
+        if (liveBestExact == null || exact.pct < liveBestExact) liveBestExact = exact.pct;
+        const exactStr = pc(exact.pct);
+        const info = detail + ` · 4 cantos ${roughStr} · com fita ${exactStr} (${exact.ribbonPts} pts)`;
+        if (exact.pct <= LIVE_TARGET_ERR_PCT) {
+          if (autoCaptureToggle.checked) {
+            setLiveHint("good", `Perfeito! Erro ${exactStr} — capturando…`, info);
+            if (navigator.vibrate) navigator.vibrate(60);
+            captureFromVideo(found, liveFullCanvas);
+            return;
+          }
+          setLiveHint("good", `Foto ajustada (erro ${exactStr}) — pode tirar a foto`, info);
+        } else {
+          setLiveHint("warn",
+            `Quase lá — erro ${exactStr} (meta até ${metaStr}; melhor até agora ${pc(liveBestExact)}). Segure reto e firme, ajuste a distância e evite reflexo`,
+            info);
+        }
+      }
     }
   } else {
     setLiveHint(result.level, result.text, detail);
