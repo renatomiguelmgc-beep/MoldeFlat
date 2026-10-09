@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.1";
+const APP_VERSION = "2026-10-09.2";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -347,12 +347,9 @@ function liveCalibrationErrorPct(found) {
 // Erro de calibração do quadro atual calculado EXATAMENTE como no resultado final
 // (homografia refinada com a fita + mesma autoverificação). Mais pesado que a
 // estimativa só com os 4 cantos, por isso só roda quando a estimativa já está boa.
-function liveFinalError(found, vw, vh) {
+function liveFinalError(found, vw, vh, fullData) {
+  if (!fullData) return null;
   try {
-    liveFullCanvas.width = vw;
-    liveFullCanvas.height = vh;
-    const ctx = liveFullCanvas.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(video, 0, 0, vw, vh);
     const used = currentProfile.markers.filter((m) => found.has(m.id));
     const pxPerMm = OUTPUT_TARGET_LONG / Math.max(currentProfile.width_mm, currentProfile.height_mm);
     const srcPts = [], dstPts = [];
@@ -365,8 +362,7 @@ function liveFinalError(found, vw, vh) {
     const Hrough = computeHomography(srcPts, dstPts);
     let H = Hrough, ribbonPts = 0;
     if (currentProfile.ribbon) {
-      const imageData = ctx.getImageData(0, 0, vw, vh);
-      const r = refineHomographyWithRibbon(currentProfile, invert3x3(Hrough), imageData, vw, vh, pxPerMm, srcPts, dstPts);
+      const r = refineHomographyWithRibbon(currentProfile, invert3x3(Hrough), fullData, vw, vh, pxPerMm, srcPts, dstPts);
       if (r && r.Hfinal) { H = r.Hfinal; ribbonPts = r.pointsUsed; }
     }
     const cal = checkCalibrationQuality(H, used, found, 1, pxPerMm, currentProfile.marker_size_mm);
@@ -424,6 +420,20 @@ async function liveTick() {
   } catch (err) { /* quadro ruim: trata como nada achado */ }
   if (!liveActive) return;
 
+  // Com os 4 marcadores à vista: lê o quadro em resolução total (a mesma imagem
+  // é usada pra refinar os cantos, medir com a fita e, se for o caso, virar a foto).
+  let fullData = null;
+  if (found.size === currentProfile.markers.length) {
+    try {
+      liveFullCanvas.width = vw;
+      liveFullCanvas.height = vh;
+      const fctx = liveFullCanvas.getContext("2d", { willReadFrequently: true });
+      fctx.drawImage(video, 0, 0, vw, vh);
+      fullData = fctx.getImageData(0, 0, vw, vh);
+      refineFoundMarkers(found, fullData);
+    } catch (err) { fullData = null; }
+  }
+
   const result = evaluateLiveFrame(found, vw, vh);
   const elapsed = Math.round(performance.now() - t0);
   const detail =
@@ -465,7 +475,7 @@ async function liveTick() {
         detail + ` · 4 cantos ${roughStr}`);
     } else {
       setLiveHint("warn", "Medindo com a fita de referência…", detail + ` · 4 cantos ${roughStr}`);
-      const exact = liveFinalError(found, vw, vh);
+      const exact = liveFinalError(found, vw, vh, fullData);
       if (!liveActive) return;
       if (exact) {
         liveExactTries++;
@@ -604,6 +614,10 @@ async function processImage() {
   // Os cantos já vêm em coordenadas da foto original (resolução total),
   // independente da escala em que cada tentativa de detecção rodou.
   const scaleDetect = 1;
+  // pixels da foto em resolução total: usados pra refinar os cantos dos marcadores,
+  // ler a fita e fazer o warp final (lidos uma vez só)
+  const srcCtx = sourceCanvas.getContext("2d");
+  const srcData = srcCtx.getImageData(0, 0, srcW, srcH);
   let found, detectDebug;
   const preset = presetMarkers;
   presetMarkers = null;
@@ -614,6 +628,7 @@ async function processImage() {
       detectDebug = { scales: [], rawQuads: [] };
     } else {
       ({ found, debug: detectDebug } = await detectProfileMarkers(srcW, srcH));
+      refineFoundMarkers(found, srcData);
     }
   } catch (err) {
     setStatus("Erro ao detectar marcadores: " + err.message, "error");
@@ -674,11 +689,6 @@ async function processImage() {
   // bits, localiza cada célula na sequência com confiança e usa os pontos
   // extras (muito mais numerosos que os 4 cantos) pra refinar a homografia.
   // Precisa da foto em resolução total (não a cópia reduzida da detecção).
-  // Buscamos os pixels da foto em resolução total aqui (não só quando a fita
-  // está ativa) pra reaproveitar no warp final mais abaixo, sem ler duas vezes.
-  const srcCtx = sourceCanvas.getContext("2d");
-  const srcData = srcCtx.getImageData(0, 0, srcW, srcH);
-
   let ribbonResult = null;
   if (currentProfile.ribbon) {
     setStatus("Lendo fita de referência para refinar a precisão...");
@@ -775,6 +785,99 @@ function drawDetectionDiagnostic(found, debug) {
   for (const m of found.values()) draw(m.corners, "#35d68a", "ID " + m.id);
   cv.classList.remove("hidden");
 }
+
+/* REFINE-BEGIN */
+// Refinamento sub-pixel dos cantos de um marcador. O detector (js-aruco2) acha o
+// contorno numa imagem binarizada e erra ~1px nos cantos, o que já dá ~1% no
+// tamanho de um marcador de ~90px. Aqui cada lado do quadrado preto é re-medido
+// no ponto em que a intensidade cruza o meio entre preto e branco, uma reta é
+// ajustada por mínimos quadrados e os cantos são as interseções das retas.
+// Em fotos sintéticas com verdade conhecida: check de tamanho de ~1,4% para ~0,1-0,5%
+// e erro real de posição 30-40% menor.
+function refineMarkerCorners(data, w, h, corners) {
+  const gray = (x, y) => {
+    if (x < 0 || y < 0 || x > w - 1 || y > h - 1) return null;
+    const x0 = Math.floor(x), y0 = Math.floor(y), x1 = Math.min(x0 + 1, w - 1), y1 = Math.min(y0 + 1, h - 1);
+    const fx = x - x0, fy = y - y0;
+    const g = (xx, yy) => { const i = (yy * w + xx) * 4; return (data[i] + data[i + 1] + data[i + 2]) / 3; };
+    const top = g(x0, y0) + (g(x1, y0) - g(x0, y0)) * fx;
+    const bot = g(x0, y1) + (g(x1, y1) - g(x0, y1)) * fx;
+    return top + (bot - top) * fy;
+  };
+  const cx = corners.reduce((a, c) => a + c.x, 0) / 4, cy = corners.reduce((a, c) => a + c.y, 0) / 4;
+  const lines = [];
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (len < 12) return null;
+    const ux = (b.x - a.x) / len, uy = (b.y - a.y) / len;
+    let nx = -uy, ny = ux;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if ((mx - cx) * nx + (my - cy) * ny < 0) { nx = -nx; ny = -ny; } // normal aponta pra fora do marcador
+    // janela de busca: até ~8% do lado (a borda preta e a zona branca têm 12,5% cada)
+    const half = Math.max(2.5, Math.min(14, len * 0.08));
+    const step = half > 6 ? 0.5 : 0.25;
+    const pts = [];
+    for (let k = 0; k < 11; k++) {
+      const t = 0.2 + 0.6 * (k / 10);
+      const px = a.x + (b.x - a.x) * t, py = a.y + (b.y - a.y) * t;
+      const sm = [];
+      let outside = false;
+      for (let d = -half; d <= half + 1e-9; d += step) {
+        const g = gray(px + nx * d, py + ny * d);
+        if (g === null) { outside = true; break; }
+        sm.push({ d, g });
+      }
+      if (outside) continue;
+      let lo = Infinity, hi = -Infinity;
+      for (const q of sm) { if (q.g < lo) lo = q.g; if (q.g > hi) hi = q.g; }
+      if (hi - lo < 40) continue; // sem transição preto/branco clara
+      const mid = (lo + hi) / 2;
+      let best = null;
+      for (let j = 0; j < sm.length - 1; j++) {
+        if (sm[j].g < mid && sm[j + 1].g >= mid) { // escuro (dentro) -> claro (fora)
+          const d = sm[j].d + ((mid - sm[j].g) / (sm[j + 1].g - sm[j].g)) * (sm[j + 1].d - sm[j].d);
+          if (best === null || Math.abs(d) < Math.abs(best)) best = d;
+        }
+      }
+      if (best !== null) pts.push({ x: px + nx * best, y: py + ny * best });
+    }
+    if (pts.length < 5) return null;
+    const fit = (P) => {
+      const mx2 = P.reduce((q, p) => q + p.x, 0) / P.length, my2 = P.reduce((q, p) => q + p.y, 0) / P.length;
+      let sxx = 0, sxy = 0, syy = 0;
+      for (const p of P) { const dx = p.x - mx2, dy = p.y - my2; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; }
+      const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+      return { x: mx2, y: my2, dx: Math.cos(ang), dy: Math.sin(ang) };
+    };
+    let L = fit(pts);
+    const res = (p) => Math.abs((p.x - L.x) * -L.dy + (p.y - L.y) * L.dx);
+    const sorted = [...pts].sort((p, q) => res(p) - res(q));
+    L = fit(sorted.slice(0, Math.max(5, Math.ceil(sorted.length * 0.8)))); // descarta os 20% piores
+    lines.push(L);
+  }
+  const out = [];
+  for (let i = 0; i < 4; i++) { // canto i = interseção da reta (i-1) com a reta i
+    const A = lines[(i + 3) % 4], B = lines[i];
+    const det = A.dx * -B.dy - A.dy * -B.dx;
+    if (Math.abs(det) < 1e-6) return null;
+    const t = ((B.x - A.x) * -B.dy - (B.y - A.y) * -B.dx) / det;
+    out.push({ x: A.x + A.dx * t, y: A.y + A.dy * t });
+  }
+  return out;
+}
+
+// Refina todos os marcadores achados (cantos em px da imagem completa). Se o
+// resultado fugir demais do detector (reflexo, borda mal lida), mantém o original.
+function refineFoundMarkers(found, imageData) {
+  for (const m of found.values()) {
+    const r = refineMarkerCorners(imageData.data, imageData.width, imageData.height, m.corners);
+    if (!r) continue;
+    const maxShift = Math.max(4, markerSidePx(m.corners) * 0.1);
+    if (r.every((c, i) => Math.hypot(c.x - m.corners[i].x, c.y - m.corners[i].y) <= maxShift)) m.corners = r;
+  }
+}
+/* REFINE-END */
 
 function markerCenter(corners) {
   let x = 0, y = 0;
