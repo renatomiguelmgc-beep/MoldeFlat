@@ -1,10 +1,26 @@
 "use strict";
 
+// Faixa vermelha com a mensagem de qualquer erro de execução (no celular não há console):
+// se algo falhar, dá pra mandar o print e achar a causa.
+(function installErrorBanner() {
+  let shown = 0;
+  const show = (msg) => {
+    if (shown++ >= 3 || !document.body) return;
+    const d = document.createElement("div");
+    d.style.cssText = "position:fixed;left:8px;right:8px;top:8px;z-index:9999;background:#b3261e;color:#fff;font:12px/1.35 system-ui,sans-serif;padding:8px 10px;border-radius:10px;white-space:pre-wrap;word-break:break-word";
+    d.textContent = "Erro no app (v" + (typeof APP_VERSION !== "undefined" ? APP_VERSION : "?") + "): " + msg + "\n(toque para fechar)";
+    d.onclick = () => d.remove();
+    document.body.appendChild(d);
+  };
+  window.addEventListener("error", (e) => show(e.message + " [" + String(e.filename || "").split("/").pop() + ":" + e.lineno + "]"));
+  window.addEventListener("unhandledrejection", (e) => show("promessa: " + ((e.reason && e.reason.message) || e.reason)));
+})();
+
 /* ------------------------------------------------------------------ *
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.10";
+const APP_VERSION = "2026-10-09.11";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -1769,33 +1785,39 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
         const c = fitCircle(raw);
         if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
       }
+      if (!((area >= 50 && per >= 30) || circle)) return null; // sujeira: nem gasta tempo com arcos
       const base = smoothKeepCorners(raw);
-      const orient = Math.sign(signedArea(raw));
-      const det = detectArcs(base, 3, 2.3, 3.9, orient);
-      const med = detectMediumArcs(det.q, det.arcs, orient);
-      det.arcs = det.arcs.concat(med).sort((p1, p2) => p1.s - p2.s);
-      for (let j = 0; j < det.arcs.length - 1; j++) if (det.arcs[j + 1].s <= det.arcs[j].e) det.arcs[j].e = det.arcs[j + 1].s - 1;
-      det.arcs = det.arcs.filter((a) => a.e >= a.s);
       let pts;
-      if (!det.arcs.length) {
-        pts = sharpenCorners(simplifyClosed(base), false);
-      } else {
-        // arcos de R=3 + cadeias retas/curvas entre eles (simplificadas e com canto vivo)
-        const q = det.q, m = q.length;
-        pts = [];
-        for (let j = 0; j < det.arcs.length; j++) {
-          const a = det.arcs[j], nx = det.arcs[(j + 1) % det.arcs.length];
-          pts.push({ x: a.S.x, y: a.S.y, bulge: a.bulge });
-          const chain = [a.E];
-          let idx = (a.e + 1) % m;
-          while (idx !== nx.s) { chain.push(q[idx]); idx = (idx + 1) % m; if (chain.length > m) break; }
-          chain.push(nx.S);
-          const simp = sharpenCorners(dpSimplify(chain, TOL), true);
-          for (let t = 0; t < simp.length - 1; t++) pts.push({ x: simp[t].x, y: simp[t].y });
+      try {
+        if (opts.noArcs) throw new Error("sem arcos");
+        const orient = Math.sign(signedArea(raw));
+        const det = detectArcs(base, 3, 2.3, 3.9, orient);
+        const med = detectMediumArcs(det.q, det.arcs, orient);
+        det.arcs = det.arcs.concat(med).sort((p1, p2) => p1.s - p2.s);
+        for (let j = 0; j < det.arcs.length - 1; j++) if (det.arcs[j + 1].s <= det.arcs[j].e) det.arcs[j].e = det.arcs[j + 1].s - 1;
+        det.arcs = det.arcs.filter((a) => a.e >= a.s);
+        if (!det.arcs.length) {
+          pts = sharpenCorners(simplifyClosed(base), false);
+        } else {
+          // arcos + cadeias retas/curvas entre eles (simplificadas e com canto vivo)
+          const q = det.q, m = q.length;
+          pts = [];
+          for (let j = 0; j < det.arcs.length; j++) {
+            const a = det.arcs[j], nx = det.arcs[(j + 1) % det.arcs.length];
+            pts.push({ x: a.S.x, y: a.S.y, bulge: a.bulge });
+            const chain = [a.E];
+            let idx = (a.e + 1) % m;
+            while (idx !== nx.s) { chain.push(q[idx]); idx = (idx + 1) % m; if (chain.length > m) break; }
+            chain.push(nx.S);
+            const simp = sharpenCorners(dpSimplify(chain, TOL), true);
+            for (let t = 0; t < simp.length - 1; t++) pts.push({ x: simp[t].x, y: simp[t].y });
+          }
         }
+      } catch (e) {
+        pts = sharpenCorners(simplifyClosed(base), false); // qualquer falha nos arcos: polilinha simples
       }
       return { pts, area, per, circle };
-    }).filter((l) => l.pts.length >= 3 && ((l.area >= 50 && l.per >= 30) || l.circle));
+    }).filter((l) => l && l.pts.length >= 3);
     if (!cand.length) return null;
     return cand.map((l, i) => {
       let depth = 0;
@@ -1812,7 +1834,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
   // abriu na peça) — as concavidades reais da borda externa ficam como estão, sem arredondar.
   // Furos redondos (parafuso) continuam, vindos do contorno detalhado.
   let silhouette = null;
-  {
+  try {
     const rS = Math.max(3, Math.round(12 * pxPerMm));
     const Af = new Float32Array(N);
     for (let i = 0; i < N; i++) Af[i] = keep[i];
@@ -1864,7 +1886,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
     }
     const loopsS = finishLoops(traceLoops(fS));
     if (loopsS) silhouette = [...loopsS.filter((l) => !l.hole), ...loops.filter((l) => l.hole && l.circle)];
-  }
+  } catch (e) { silhouette = null; }
 
   const outer = loops.filter((l) => !l.hole);
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
@@ -2837,14 +2859,29 @@ async function runVectorization(holder) {
   await nextFrame();
   const { canvas, outW, outH, pxPerMm, profile } = holder.geo;
   let vec;
-  try {
+  const t0 = performance.now();
+  holder.vecNote = "";
+  const attempt = (noArcs) => {
     const img = canvas.getContext("2d").getImageData(0, 0, outW, outH);
-    vec = vectorizePiece(img.data, outW, outH, pxPerMm, profile, { keepInternals: vectorInk.checked });
-    if (!vec.error && vectorInk.checked && vec.internals) vec.lines = extractInkLines(img.data, outW, outH, pxPerMm, vec.internals);
-    vec.internals = null;
-  } catch (e) {
-    vec = { error: "Erro ao vetorizar: " + e.message };
+    const v = vectorizePiece(img.data, outW, outH, pxPerMm, profile, { keepInternals: vectorInk.checked, noArcs });
+    if (!v.error && vectorInk.checked && v.internals) {
+      try { v.lines = extractInkLines(img.data, outW, outH, pxPerMm, v.internals); } catch (e) { v.lines = []; holder.vecNote += " Linhas de caneta indisponíveis nesta foto."; }
+    }
+    v.internals = null;
+    return v;
+  };
+  try {
+    vec = attempt(false);
+  } catch (e1) {
+    // qualquer falha: tenta de novo sem o reconhecimento de arcos, pra nunca perder o DXF
+    try {
+      vec = attempt(true);
+      holder.vecNote += " Arcos desligados nesta foto (falha ao reconhecer: " + e1.message + ").";
+    } catch (e2) {
+      vec = { error: "Erro ao vetorizar: " + e2.message };
+    }
   }
+  holder.vecSeconds = (performance.now() - t0) / 1000;
   if (vec.error) {
     if (isCurrent()) vectorInfo.textContent = vec.error;
     return;
@@ -2879,7 +2916,8 @@ function buildVectorView(holder) {
   vectorInfo.textContent =
     outer.length + " peça(s), uma linha fechada cada" + (holes ? ", " + holes + " furo(s)" : "") +
     (arcCount ? ", " + arcCount + " arco(s)" : "") + (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
-    dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar.";
+    dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar." +
+    (holder.vecNote || "") + (holder.vecSeconds != null ? " (vetorizado em " + holder.vecSeconds.toFixed(1).replace(".", ",") + " s)" : "");
   vectorActions.classList.remove("hidden");
 }
 
