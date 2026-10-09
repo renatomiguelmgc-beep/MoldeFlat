@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.2";
+const APP_VERSION = "2026-10-09.4";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -360,12 +360,12 @@ function liveFinalError(found, vw, vh, fullData) {
       dstPts.push({ x: mm.x * pxPerMm, y: mm.y * pxPerMm });
     }
     const Hrough = computeHomography(srcPts, dstPts);
-    let H = Hrough, ribbonPts = 0;
+    let H = Hrough, ribbonPts = 0, lensUsed = null;
     if (currentProfile.ribbon) {
       const r = refineHomographyWithRibbon(currentProfile, invert3x3(Hrough), fullData, vw, vh, pxPerMm, srcPts, dstPts);
-      if (r && r.Hfinal) { H = r.Hfinal; ribbonPts = r.pointsUsed; }
+      if (r && r.Hfinal) { H = r.Hfinal; ribbonPts = r.pointsUsed; lensUsed = r.lens || null; }
     }
-    const cal = checkCalibrationQuality(H, used, found, 1, pxPerMm, currentProfile.marker_size_mm);
+    const cal = checkCalibrationQuality(H, used, undistortFound(found, lensUsed), 1, pxPerMm, currentProfile.marker_size_mm);
     return { pct: cal.maxAbsErrorPct, ribbonPts };
   } catch (e) {
     return null;
@@ -703,13 +703,15 @@ async function processImage() {
   }
 
   const H = (ribbonResult && ribbonResult.Hfinal) ? ribbonResult.Hfinal : Hrough;
+  const lens = (ribbonResult && ribbonResult.lens) || null;
+  const foundForCheck = undistortFound(found, lens);
   const Hinv = invert3x3(H);
 
   // Autoverificação: cada marcador tem um tamanho real conhecido (marker_size_mm).
   // Medimos o próprio marcador DEPOIS de corrigido e comparamos com esse valor —
   // se não bater, a suposição de geometria do tapete (ou a detecção) está errada,
   // e isso teria passado batido com um ajuste de só 4 pontos (sempre "perfeito").
-  const calibration = checkCalibrationQuality(H, usedMarkers, found, scaleDetect, pxPerMm, currentProfile.marker_size_mm);
+  const calibration = checkCalibrationQuality(H, usedMarkers, foundForCheck, scaleDetect, pxPerMm, currentProfile.marker_size_mm);
 
   setStatus("Gerando imagem corrigida (pode levar alguns segundos)...");
   await nextFrame();
@@ -727,7 +729,7 @@ async function processImage() {
   await warpPerspective(srcData, outImageData, Hinv, srcW, srcH, (progress) => {
     setStatus(`Gerando imagem corrigida... ${Math.round(progress * 100)}%`);
     setProgress(0.3 + progress * 0.65);
-  });
+  }, lens);
   fctx.putImageData(outImageData, 0, 0);
 
   drawLegend(fctx, outW, outH, legendPx, pxPerMm, currentProfile);
@@ -742,7 +744,11 @@ async function processImage() {
     `Use a régua de ${100} mm no rodapé da imagem para conferir/ajustar a escala no AutoCAD.` +
     (currentProfile.ribbon
       ? (ribbonResult && ribbonResult.Hfinal
-          ? ` Calibração refinada com ${ribbonResult.pointsUsed} pontos da fita de referência.`
+          ? ` Calibração refinada com ${ribbonResult.pointsUsed} pontos da fita de referência.` +
+            (ribbonResult.lens ? ` Distorção da lente corrigida (k1 = ${(ribbonResult.lens.k1 * 100).toFixed(2).replace(".", ",")}%).` : "") +
+            ` Concordância da fita com a calibração: média ${mmStr(ribbonResult.resid.final.mean)}, 95% dos pontos até ${mmStr(ribbonResult.resid.final.p95)}` +
+            ` (só com os 4 cantos seria: média ${mmStr(ribbonResult.resid.cornersOnly.mean)}, até ${mmStr(ribbonResult.resid.cornersOnly.p95)}).` +
+            ` Isso mede a consistência da foto, não o erro de escala de impressão do tapete.`
           : ` Fita de referência não pôde ser lida com confiança (usando só os 4 cantos) — confira iluminação/foco da borda.`)
       : "");
 
@@ -878,6 +884,8 @@ function refineFoundMarkers(found, imageData) {
   }
 }
 /* REFINE-END */
+
+const mmStr = (v) => v.toFixed(2).replace(".", ",") + " mm";
 
 function markerCenter(corners) {
   let x = 0, y = 0;
@@ -1201,22 +1209,121 @@ function refineHomographyWithRibbon(profile, HroughInv, srcData, srcW, srcH, pxP
 
   const allSrc = [...cornerSrcPts, ...extraSrc];
   const allDst = [...cornerDstPts, ...extraDst];
-  const H0 = computeHomography(allSrc, allDst);
-  const residuals = allSrc.map((s, i) => {
-    const [px, py] = applyH(H0, s.x, s.y);
-    return Math.hypot(px - allDst[i].x, py - allDst[i].y);
-  });
-  const sortedRes = [...residuals].sort((a, b) => a - b);
-  const cutoff = sortedRes[Math.floor(sortedRes.length * 0.85)];
-  const keptSrc = [], keptDst = [];
-  for (let i = 0; i < allSrc.length; i++) {
-    if (i < cornerSrcPts.length || residuals[i] <= cutoff) { keptSrc.push(allSrc[i]); keptDst.push(allDst[i]); }
+  const nCorners = cornerSrcPts.length;
+  const undist = (pts, lens) => (lens ? pts.map((p) => { const [x, y] = lensUndistort(lens, p.x, p.y); return { x, y }; }) : pts);
+
+  // Ajusta a homografia descartando os 15% piores pontos por resíduo (os cantos
+  // dos marcadores sempre ficam): um ponto da fita às vezes cai numa posição ruim
+  // e sem isso ele puxa a calibração toda.
+  const trimFit = (lens) => {
+    const u = undist(allSrc, lens);
+    const H0 = computeHomography(u, allDst);
+    const residuals = u.map((p, i) => {
+      const [px, py] = applyH(H0, p.x, p.y);
+      return Math.hypot(px - allDst[i].x, py - allDst[i].y);
+    });
+    const sortedRes = [...residuals].sort((x, y) => x - y);
+    const cutoff = sortedRes[Math.floor(sortedRes.length * 0.85)];
+    const keptSrc = [], keptDst = [];
+    for (let i = 0; i < allSrc.length; i++) {
+      if (i < nCorners || residuals[i] <= cutoff) { keptSrc.push(allSrc[i]); keptDst.push(allDst[i]); }
+    }
+    return { H: computeHomography(undist(keptSrc, lens), keptDst), keptSrc, keptDst };
+  };
+
+  // Distorção radial da lente (k1): a fita corre ao longo das 4 bordas, então uma lente
+  // com distorção entorta essas "retas" e a homografia sozinha não consegue explicar.
+  // Só aceita a correção se ela reduzir bem o resíduo (senão é ruído).
+  let fitted = trimFit(null);
+  let lens = null;
+  const fit = fitLensK1(fitted.keptSrc, fitted.keptDst, srcW, srcH);
+  if (Math.abs(fit.k1) >= LENS_MIN_K1 && fit.cost1 <= fit.cost0 * 0.85) {
+    lens = { k1: fit.k1, cx: srcW / 2, cy: srcH / 2, R: Math.hypot(srcW / 2, srcH / 2) };
+    fitted = trimFit(lens);
   }
-  const Hfinal = computeHomography(keptSrc, keptDst);
-  return { Hfinal, pointsUsed: extraSrc.length };
+  const Hfinal = fitted.H;
+
+  // Concordância em mm: onde a fita aparece na foto vs onde deveria estar segundo a
+  // calibração (final e só-4-cantos). Mede consistência geométrica do conjunto (ruído,
+  // distorção da lente, inclinação) — NÃO enxerga erro de escala de impressão do tapete,
+  // que afeta tudo por igual.
+  const Hrough = invert3x3(HroughInv);
+  const residMm = (H, pts) => pts.map((p, i) => {
+    const [px, py] = applyH(H, p.x, p.y);
+    return Math.hypot(px - extraDst[i].x, py - extraDst[i].y) / pxPerMm;
+  });
+  const stats = (arr) => {
+    const sorted = [...arr].sort((x, y) => x - y);
+    return {
+      mean: arr.reduce((x, y) => x + y, 0) / arr.length,
+      p95: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))],
+    };
+  };
+  const resid = {
+    final: stats(residMm(Hfinal, undist(extraSrc, lens))),
+    cornersOnly: stats(residMm(Hrough, extraSrc)),
+  };
+  return { Hfinal, pointsUsed: extraSrc.length, resid, lens };
 }
 
-async function warpPerspective(srcData, outImageData, Hinv, srcW, srcH, onProgress) {
+/* Distorção radial simples: ponto_foto = centro + (ideal - centro) * (1 + k1 * r²),
+   com r = distância ao centro / meia-diagonal da imagem. */
+const LENS_MIN_K1 = 0.0008;
+
+function lensDistort(lens, ux, uy) {
+  const r2 = ((ux - lens.cx) ** 2 + (uy - lens.cy) ** 2) / (lens.R * lens.R);
+  const f = 1 + lens.k1 * r2;
+  return [lens.cx + (ux - lens.cx) * f, lens.cy + (uy - lens.cy) * f];
+}
+
+function lensUndistort(lens, x, y) {
+  let ux = x, uy = y;
+  for (let i = 0; i < 5; i++) {
+    const r2 = ((ux - lens.cx) ** 2 + (uy - lens.cy) ** 2) / (lens.R * lens.R);
+    const f = 1 + lens.k1 * r2;
+    ux = lens.cx + (x - lens.cx) / f;
+    uy = lens.cy + (y - lens.cy) / f;
+  }
+  return [ux, uy];
+}
+
+function undistortFound(found, lens) {
+  if (!lens) return found;
+  const out = new Map();
+  for (const [id, m] of found) {
+    out.set(id, { id, corners: m.corners.map((c) => { const [x, y] = lensUndistort(lens, c.x, c.y); return { x, y }; }) });
+  }
+  return out;
+}
+
+// Acha o k1 que minimiza o resíduo da homografia (busca por seção áurea em ±4%).
+function fitLensK1(src, dst, w, h) {
+  const base = { cx: w / 2, cy: h / 2, R: Math.hypot(w / 2, h / 2) };
+  const cost = (k1) => {
+    const lens = { ...base, k1 };
+    const u = src.map((p) => { const [x, y] = lensUndistort(lens, p.x, p.y); return { x, y }; });
+    let H;
+    try { H = computeHomography(u, dst); } catch (e) { return Infinity; }
+    let sum = 0;
+    for (let i = 0; i < u.length; i++) {
+      const [px, py] = applyH(H, u[i].x, u[i].y);
+      sum += (px - dst[i].x) ** 2 + (py - dst[i].y) ** 2;
+    }
+    return Math.sqrt(sum / u.length);
+  };
+  let lo = -0.04, hi = 0.04;
+  const gr = (Math.sqrt(5) - 1) / 2;
+  let c = hi - gr * (hi - lo), d = lo + gr * (hi - lo);
+  let fc = cost(c), fd = cost(d);
+  for (let i = 0; i < 26; i++) {
+    if (fc < fd) { hi = d; d = c; fd = fc; c = hi - gr * (hi - lo); fc = cost(c); }
+    else { lo = c; c = d; fc = fd; d = lo + gr * (hi - lo); fd = cost(d); }
+  }
+  const k1 = (lo + hi) / 2;
+  return { k1, cost0: cost(0), cost1: cost(k1) };
+}
+
+async function warpPerspective(srcData, outImageData, Hinv, srcW, srcH, onProgress, lens) {
   const outW = outImageData.width;
   const outH = outImageData.height;
   const out = outImageData.data;
@@ -1226,7 +1333,8 @@ async function warpPerspective(srcData, outImageData, Hinv, srcW, srcH, onProgre
     const yEnd = Math.min(yStart + ROWS_PER_CHUNK, outH);
     for (let y = yStart; y < yEnd; y++) {
       for (let x = 0; x < outW; x++) {
-        const [sx, sy] = applyH(Hinv, x, y);
+        let [sx, sy] = applyH(Hinv, x, y);
+        if (lens) [sx, sy] = lensDistort(lens, sx, sy);
         const px = sampleBilinear(srcData, srcW, srcH, sx, sy);
         const o = (y * outW + x) * 4;
         if (px) {
