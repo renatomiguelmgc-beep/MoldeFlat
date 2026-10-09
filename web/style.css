@@ -460,6 +460,7 @@ body.camera-mode .camera-actions {
 .vector-toggle { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 0.9rem; }
 .vector-toggle input { width: 18px; height: 18px; }
 .vector-info { white-space: pre-line; }
+.vector-select { width: auto; margin: 0 0 0 8px; padding: 6px 28px 6px 10px; font-size: 0.85rem; }
 
 /* ---------- Result ---------- */
 

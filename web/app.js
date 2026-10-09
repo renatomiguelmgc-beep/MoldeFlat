@@ -20,7 +20,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.11";
+const APP_VERSION = "2026-10-09.13";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -1310,6 +1310,195 @@ function expandLoop(pts, perArc) {
   return out;
 }
 
+// ---- acabamento de contorno (nível de módulo: usado também pela simetrização) ----
+// simplificação Douglas-Peucker (tolerância 0,15 mm)
+const VEC_TOL = 0.4;
+const vecDp = (pts) => {
+  const n = pts.length;
+  const keepIdx = new Uint8Array(n);
+  keepIdx[0] = 1; keepIdx[n - 1] = 1;
+  const st = [[0, n - 1]];
+  while (st.length) {
+    const [a, b] = st.pop();
+    if (b <= a + 1) continue;
+    const pa = pts[a], pb = pts[b];
+    const dx = pb.x - pa.x, dy = pb.y - pa.y, len = Math.hypot(dx, dy) || 1e-9;
+    let md = -1, mi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((pts[i].x - pa.x) * dy - (pts[i].y - pa.y) * dx) / len;
+      if (d > md) { md = d; mi = i; }
+    }
+    if (md > VEC_TOL) { keepIdx[mi] = 1; st.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keepIdx[i]);
+};
+const vecSimplifyClosed = (pts) => {
+  let fi = 0, fd = -1;
+  for (let i = 1; i < pts.length; i++) {
+    const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
+    if (d > fd) { fd = d; fi = i; }
+  }
+  const A = vecDp(pts.slice(0, fi + 1));
+  const B = vecDp([...pts.slice(fi), pts[0]]);
+  return [...A.slice(0, -1), ...B.slice(0, -1)];
+};
+const vecSignedArea = (pts) => {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+  return a / 2;
+};
+const vecPerim = (pts) => pts.reduce((s, p, i) => s + Math.hypot(pts[(i + 1) % pts.length].x - p.x, pts[(i + 1) % pts.length].y - p.y), 0);
+const vecInside = (pt, poly) => {
+  let c = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    if ((poly[i].y > pt.y) !== (poly[j].y > pt.y) &&
+        pt.x < ((poly[j].x - poly[i].x) * (pt.y - poly[i].y)) / (poly[j].y - poly[i].y) + poly[i].x) c = !c;
+  }
+  return c;
+};
+
+// Furo redondo (parafuso): circularidade alta + ajuste de círculo com resíduo pequeno vira
+// CIRCLE no DXF. Furos pequenos só passam se forem redondos (senão é sujeira/ponto de tinta).
+const vecFitCircle = (pts) => {
+  const n = pts.length;
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= n; my /= n;
+  let Suu = 0, Suv = 0, Svv = 0, Suuu = 0, Svvv = 0, Suvv = 0, Svuu = 0;
+  for (const p of pts) {
+    const u = p.x - mx, v = p.y - my;
+    Suu += u * u; Suv += u * v; Svv += v * v; Suuu += u * u * u; Svvv += v * v * v; Suvv += u * v * v; Svuu += v * u * u;
+  }
+  const det = Suu * Svv - Suv * Suv;
+  if (Math.abs(det) < 1e-9) return null;
+  const uc = (Svv * (Suuu + Suvv) / 2 - Suv * (Svvv + Svuu) / 2) / det;
+  const vc = (Suu * (Svvv + Svuu) / 2 - Suv * (Suuu + Suvv) / 2) / det;
+  const cx = mx + uc, cy = my + vc;
+  const r = pts.reduce((a, p) => a + Math.hypot(p.x - cx, p.y - cy), 0) / n;
+  const maxRes = Math.max(...pts.map((p) => Math.abs(Math.hypot(p.x - cx, p.y - cy) - r)));
+  return { cx, cy, r, maxRes };
+};
+// Suaviza o ruído da borda (±0,2 mm) com média móvel de 9 pontos, MAS preserva os cantos:
+// um ponto perto de uma virada brusca (>30° em ±6 pontos) fica onde está. Assim as retas saem
+// retas (poucos nós na simplificação) e os cantos continuam vivos.
+const vecSmoothKeepCorners = (pts) => {
+  const n = pts.length;
+  if (n < 24) return pts;
+  const K = 6, HW = 4;
+  const corner = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - K + n) % n], b = pts[i], c = pts[(i + K) % n];
+    const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
+    const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+    if (l1 < 1e-9 || l2 < 1e-9) continue;
+    const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
+    if (cos < Math.cos((30 * Math.PI) / 180)) corner[i] = 1;
+  }
+  const near = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (!corner[i]) continue;
+    for (let k = -HW; k <= HW; k++) near[(i + k + n) % n] = 1;
+  }
+  return pts.map((p, i) => {
+    if (near[i]) return p;
+    let sx = 0, sy = 0;
+    for (let k = -HW; k <= HW; k++) { const q = pts[(i + k + n) % n]; sx += q.x; sy += q.y; }
+    return { x: sx / (2 * HW + 1), y: sy / (2 * HW + 1) };
+  });
+};
+// Canto vivo: o desfoque arredonda os cantos e a simplificação deixa 2-3 vértices ali. Onde
+// duas retas LONGAS (>=12 mm) se encontram por um trecho curto (<=8 mm total), o trecho é
+// trocado pelo ponto onde as retas se cruzam — se esse ponto estiver perto do trecho (<=6 mm).
+// Retângulo vira 4 nós e o canto deixa de ser arredondado.
+const vecSharpenCorners = (pts, open) => {
+  const n = pts.length;
+  if (n < 5) return pts;
+  const seg = (i) => ({ a: pts[i], b: pts[(i + 1) % n], len: Math.hypot(pts[(i + 1) % n].x - pts[i].x, pts[(i + 1) % n].y - pts[i].y) });
+  const LONG = 12, SHORT_TOTAL = 8, NEAR = 6;
+  const longIdx = [];
+  for (let i = 0; i < (open ? n - 1 : n); i++) if (seg(i).len >= LONG) longIdx.push(i);
+  if (longIdx.length < 2) return pts;
+  const replace = new Map(); // índice do 1º vértice do trecho -> { count, point }
+  const skip = new Set();
+  for (let k = 0; k < longIdx.length; k++) {
+    if (open && k === longIdx.length - 1) continue;
+    const ia = longIdx[k], ib = longIdx[(k + 1) % longIdx.length];
+    if (ia === ib) continue;
+    // trecho curto entre o fim do segmento ia e o início do segmento ib: vértices ia+1 .. ib
+    const count = (ib - ia - 1 + n) % n; // nº de segmentos curtos no meio
+    if (count < 1) continue;
+    let total = 0;
+    for (let j = 1; j <= count; j++) total += seg((ia + j) % n).len;
+    if (total > SHORT_TOTAL) continue;
+    const A = seg(ia), B = seg(ib);
+    const d1x = (A.b.x - A.a.x) / A.len, d1y = (A.b.y - A.a.y) / A.len;
+    const d2x = (B.b.x - B.a.x) / B.len, d2y = (B.b.y - B.a.y) / B.len;
+    const det = d1x * d2y - d1y * d2x;
+    if (Math.abs(det) < Math.sin((20 * Math.PI) / 180)) continue; // quase paralelas: não é canto
+    const t = ((B.a.x - A.a.x) * d2y - (B.a.y - A.a.y) * d2x) / det;
+    const P = { x: A.a.x + d1x * t, y: A.a.y + d1y * t };
+    const first = pts[(ia + 1) % n], last = pts[ib % n];
+    if (Math.hypot(P.x - first.x, P.y - first.y) > NEAR || Math.hypot(P.x - last.x, P.y - last.y) > NEAR) continue;
+    replace.set((ia + 1) % n, { count: count + 1, point: P });
+    for (let j = 1; j <= count; j++) skip.add((ia + 1 + j) % n);
+  }
+  if (!replace.size) return pts;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    if (skip.has(i)) continue;
+    out.push(replace.has(i) ? replace.get(i).point : pts[i]);
+  }
+  return out.length >= 3 ? out : pts;
+};
+const vecFinishLoops = (rawIn, opts) => {
+  const cand = rawIn.map((raw) => {
+    const area = Math.abs(vecSignedArea(raw)), per = vecPerim(raw);
+    let circle = null;
+    if (per > 0 && (4 * Math.PI * area) / (per * per) >= 0.88 && area >= 12 && area <= 4000) {
+      const c = vecFitCircle(raw);
+      if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
+    }
+    if (!((area >= 50 && per >= 30) || circle)) return null; // sujeira: nem gasta tempo com arcos
+    const base = vecSmoothKeepCorners(raw);
+    let pts;
+    try {
+      if (opts.noArcs) throw new Error("sem arcos");
+      const orient = Math.sign(vecSignedArea(raw));
+      const det = detectArcs(base, 3, 2.3, 3.9, orient);
+      const med = detectMediumArcs(det.q, det.arcs, orient);
+      det.arcs = det.arcs.concat(med).sort((p1, p2) => p1.s - p2.s);
+      for (let j = 0; j < det.arcs.length - 1; j++) if (det.arcs[j + 1].s <= det.arcs[j].e) det.arcs[j].e = det.arcs[j + 1].s - 1;
+      det.arcs = det.arcs.filter((a) => a.e >= a.s);
+      if (!det.arcs.length) {
+        pts = vecSharpenCorners(vecSimplifyClosed(base), false);
+      } else {
+        // arcos + cadeias retas/curvas entre eles (simplificadas e com canto vivo)
+        const q = det.q, m = q.length;
+        pts = [];
+        for (let j = 0; j < det.arcs.length; j++) {
+          const a = det.arcs[j], nx = det.arcs[(j + 1) % det.arcs.length];
+          pts.push({ x: a.S.x, y: a.S.y, bulge: a.bulge });
+          const chain = [a.E];
+          let idx = (a.e + 1) % m;
+          while (idx !== nx.s) { chain.push(q[idx]); idx = (idx + 1) % m; if (chain.length > m) break; }
+          chain.push(nx.S);
+          const simp = vecSharpenCorners(dpSimplify(chain, VEC_TOL), true);
+          for (let t = 0; t < simp.length - 1; t++) pts.push({ x: simp[t].x, y: simp[t].y });
+        }
+      }
+    } catch (e) {
+      pts = vecSharpenCorners(vecSimplifyClosed(base), false); // qualquer falha nos arcos: polilinha simples
+    }
+    return { pts, area, per, circle, raw };
+  }).filter((l) => l && l.pts.length >= 3);
+  if (!cand.length) return null;
+  return cand.map((l, i) => {
+    let depth = 0;
+    cand.forEach((other, j) => { if (j !== i && vecInside(l.pts[0], other.pts)) depth++; });
+    return { pts: l.pts, circle: l.circle, raw: l.raw, hole: depth % 2 === 1, areaMm2: l.area, perimeterMm: l.per };
+  });
+};
+
 function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
   opts = opts || {};
   const N = w * h;
@@ -1638,194 +1827,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
     return rawLoops;
   };
 
-  // simplificação Douglas-Peucker (tolerância 0,15 mm)
-  const TOL = 0.4;
-  const dp = (pts) => {
-    const n = pts.length;
-    const keepIdx = new Uint8Array(n);
-    keepIdx[0] = 1; keepIdx[n - 1] = 1;
-    const st = [[0, n - 1]];
-    while (st.length) {
-      const [a, b] = st.pop();
-      if (b <= a + 1) continue;
-      const pa = pts[a], pb = pts[b];
-      const dx = pb.x - pa.x, dy = pb.y - pa.y, len = Math.hypot(dx, dy) || 1e-9;
-      let md = -1, mi = -1;
-      for (let i = a + 1; i < b; i++) {
-        const d = Math.abs((pts[i].x - pa.x) * dy - (pts[i].y - pa.y) * dx) / len;
-        if (d > md) { md = d; mi = i; }
-      }
-      if (md > TOL) { keepIdx[mi] = 1; st.push([a, mi], [mi, b]); }
-    }
-    return pts.filter((_, i) => keepIdx[i]);
-  };
-  const simplifyClosed = (pts) => {
-    let fi = 0, fd = -1;
-    for (let i = 1; i < pts.length; i++) {
-      const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
-      if (d > fd) { fd = d; fi = i; }
-    }
-    const A = dp(pts.slice(0, fi + 1));
-    const B = dp([...pts.slice(fi), pts[0]]);
-    return [...A.slice(0, -1), ...B.slice(0, -1)];
-  };
-  const signedArea = (pts) => {
-    let a = 0;
-    for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
-    return a / 2;
-  };
-  const perim = (pts) => pts.reduce((s, p, i) => s + Math.hypot(pts[(i + 1) % pts.length].x - p.x, pts[(i + 1) % pts.length].y - p.y), 0);
-  const inside = (pt, poly) => {
-    let c = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      if ((poly[i].y > pt.y) !== (poly[j].y > pt.y) &&
-          pt.x < ((poly[j].x - poly[i].x) * (pt.y - poly[i].y)) / (poly[j].y - poly[i].y) + poly[i].x) c = !c;
-    }
-    return c;
-  };
-
-  // Furo redondo (parafuso): circularidade alta + ajuste de círculo com resíduo pequeno vira
-  // CIRCLE no DXF. Furos pequenos só passam se forem redondos (senão é sujeira/ponto de tinta).
-  const fitCircle = (pts) => {
-    const n = pts.length;
-    let mx = 0, my = 0;
-    for (const p of pts) { mx += p.x; my += p.y; }
-    mx /= n; my /= n;
-    let Suu = 0, Suv = 0, Svv = 0, Suuu = 0, Svvv = 0, Suvv = 0, Svuu = 0;
-    for (const p of pts) {
-      const u = p.x - mx, v = p.y - my;
-      Suu += u * u; Suv += u * v; Svv += v * v; Suuu += u * u * u; Svvv += v * v * v; Suvv += u * v * v; Svuu += v * u * u;
-    }
-    const det = Suu * Svv - Suv * Suv;
-    if (Math.abs(det) < 1e-9) return null;
-    const uc = (Svv * (Suuu + Suvv) / 2 - Suv * (Svvv + Svuu) / 2) / det;
-    const vc = (Suu * (Svvv + Svuu) / 2 - Suv * (Suuu + Suvv) / 2) / det;
-    const cx = mx + uc, cy = my + vc;
-    const r = pts.reduce((a, p) => a + Math.hypot(p.x - cx, p.y - cy), 0) / n;
-    const maxRes = Math.max(...pts.map((p) => Math.abs(Math.hypot(p.x - cx, p.y - cy) - r)));
-    return { cx, cy, r, maxRes };
-  };
-  // Suaviza o ruído da borda (±0,2 mm) com média móvel de 9 pontos, MAS preserva os cantos:
-  // um ponto perto de uma virada brusca (>30° em ±6 pontos) fica onde está. Assim as retas saem
-  // retas (poucos nós na simplificação) e os cantos continuam vivos.
-  const smoothKeepCorners = (pts) => {
-    const n = pts.length;
-    if (n < 24) return pts;
-    const K = 6, HW = 4;
-    const corner = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      const a = pts[(i - K + n) % n], b = pts[i], c = pts[(i + K) % n];
-      const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
-      const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
-      if (l1 < 1e-9 || l2 < 1e-9) continue;
-      const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
-      if (cos < Math.cos((30 * Math.PI) / 180)) corner[i] = 1;
-    }
-    const near = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      if (!corner[i]) continue;
-      for (let k = -HW; k <= HW; k++) near[(i + k + n) % n] = 1;
-    }
-    return pts.map((p, i) => {
-      if (near[i]) return p;
-      let sx = 0, sy = 0;
-      for (let k = -HW; k <= HW; k++) { const q = pts[(i + k + n) % n]; sx += q.x; sy += q.y; }
-      return { x: sx / (2 * HW + 1), y: sy / (2 * HW + 1) };
-    });
-  };
-  // Canto vivo: o desfoque arredonda os cantos e a simplificação deixa 2-3 vértices ali. Onde
-  // duas retas LONGAS (>=12 mm) se encontram por um trecho curto (<=8 mm total), o trecho é
-  // trocado pelo ponto onde as retas se cruzam — se esse ponto estiver perto do trecho (<=6 mm).
-  // Retângulo vira 4 nós e o canto deixa de ser arredondado.
-  const sharpenCorners = (pts, open) => {
-    const n = pts.length;
-    if (n < 5) return pts;
-    const seg = (i) => ({ a: pts[i], b: pts[(i + 1) % n], len: Math.hypot(pts[(i + 1) % n].x - pts[i].x, pts[(i + 1) % n].y - pts[i].y) });
-    const LONG = 12, SHORT_TOTAL = 8, NEAR = 6;
-    const longIdx = [];
-    for (let i = 0; i < (open ? n - 1 : n); i++) if (seg(i).len >= LONG) longIdx.push(i);
-    if (longIdx.length < 2) return pts;
-    const replace = new Map(); // índice do 1º vértice do trecho -> { count, point }
-    const skip = new Set();
-    for (let k = 0; k < longIdx.length; k++) {
-      if (open && k === longIdx.length - 1) continue;
-      const ia = longIdx[k], ib = longIdx[(k + 1) % longIdx.length];
-      if (ia === ib) continue;
-      // trecho curto entre o fim do segmento ia e o início do segmento ib: vértices ia+1 .. ib
-      const count = (ib - ia - 1 + n) % n; // nº de segmentos curtos no meio
-      if (count < 1) continue;
-      let total = 0;
-      for (let j = 1; j <= count; j++) total += seg((ia + j) % n).len;
-      if (total > SHORT_TOTAL) continue;
-      const A = seg(ia), B = seg(ib);
-      const d1x = (A.b.x - A.a.x) / A.len, d1y = (A.b.y - A.a.y) / A.len;
-      const d2x = (B.b.x - B.a.x) / B.len, d2y = (B.b.y - B.a.y) / B.len;
-      const det = d1x * d2y - d1y * d2x;
-      if (Math.abs(det) < Math.sin((20 * Math.PI) / 180)) continue; // quase paralelas: não é canto
-      const t = ((B.a.x - A.a.x) * d2y - (B.a.y - A.a.y) * d2x) / det;
-      const P = { x: A.a.x + d1x * t, y: A.a.y + d1y * t };
-      const first = pts[(ia + 1) % n], last = pts[ib % n];
-      if (Math.hypot(P.x - first.x, P.y - first.y) > NEAR || Math.hypot(P.x - last.x, P.y - last.y) > NEAR) continue;
-      replace.set((ia + 1) % n, { count: count + 1, point: P });
-      for (let j = 1; j <= count; j++) skip.add((ia + 1 + j) % n);
-    }
-    if (!replace.size) return pts;
-    const out = [];
-    for (let i = 0; i < n; i++) {
-      if (skip.has(i)) continue;
-      out.push(replace.has(i) ? replace.get(i).point : pts[i]);
-    }
-    return out.length >= 3 ? out : pts;
-  };
-  const finishLoops = (rawIn) => {
-    const cand = rawIn.map((raw) => {
-      const area = Math.abs(signedArea(raw)), per = perim(raw);
-      let circle = null;
-      if (per > 0 && (4 * Math.PI * area) / (per * per) >= 0.88 && area >= 12 && area <= 4000) {
-        const c = fitCircle(raw);
-        if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
-      }
-      if (!((area >= 50 && per >= 30) || circle)) return null; // sujeira: nem gasta tempo com arcos
-      const base = smoothKeepCorners(raw);
-      let pts;
-      try {
-        if (opts.noArcs) throw new Error("sem arcos");
-        const orient = Math.sign(signedArea(raw));
-        const det = detectArcs(base, 3, 2.3, 3.9, orient);
-        const med = detectMediumArcs(det.q, det.arcs, orient);
-        det.arcs = det.arcs.concat(med).sort((p1, p2) => p1.s - p2.s);
-        for (let j = 0; j < det.arcs.length - 1; j++) if (det.arcs[j + 1].s <= det.arcs[j].e) det.arcs[j].e = det.arcs[j + 1].s - 1;
-        det.arcs = det.arcs.filter((a) => a.e >= a.s);
-        if (!det.arcs.length) {
-          pts = sharpenCorners(simplifyClosed(base), false);
-        } else {
-          // arcos + cadeias retas/curvas entre eles (simplificadas e com canto vivo)
-          const q = det.q, m = q.length;
-          pts = [];
-          for (let j = 0; j < det.arcs.length; j++) {
-            const a = det.arcs[j], nx = det.arcs[(j + 1) % det.arcs.length];
-            pts.push({ x: a.S.x, y: a.S.y, bulge: a.bulge });
-            const chain = [a.E];
-            let idx = (a.e + 1) % m;
-            while (idx !== nx.s) { chain.push(q[idx]); idx = (idx + 1) % m; if (chain.length > m) break; }
-            chain.push(nx.S);
-            const simp = sharpenCorners(dpSimplify(chain, TOL), true);
-            for (let t = 0; t < simp.length - 1; t++) pts.push({ x: simp[t].x, y: simp[t].y });
-          }
-        }
-      } catch (e) {
-        pts = sharpenCorners(simplifyClosed(base), false); // qualquer falha nos arcos: polilinha simples
-      }
-      return { pts, area, per, circle };
-    }).filter((l) => l && l.pts.length >= 3);
-    if (!cand.length) return null;
-    return cand.map((l, i) => {
-      let depth = 0;
-      cand.forEach((other, j) => { if (j !== i && inside(l.pts[0], other.pts)) depth++; });
-      return { pts: l.pts, circle: l.circle, hole: depth % 2 === 1, areaMm2: l.area, perimeterMm: l.per };
-    });
-  };
-  const loops = finishLoops(traceLoops(f));
+  const loops = vecFinishLoops(traceLoops(f), opts);
   if (!loops) return { error: "Não consegui traçar o contorno da peça." };
 
   // ---- Silhueta: UMA linha fechada por peça (sem janela interna, sem frestas) ----
@@ -1884,7 +1886,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
         if (extra[i] && !excl[i]) { const k = (y + 1) * W + x + 1; if (fS[k] < 1) fS[k] = 1; }
       }
     }
-    const loopsS = finishLoops(traceLoops(fS));
+    const loopsS = vecFinishLoops(traceLoops(fS), opts);
     if (loopsS) silhouette = [...loopsS.filter((l) => !l.hole), ...loops.filter((l) => l.hole && l.circle)];
   } catch (e) { silhouette = null; }
 
@@ -2246,6 +2248,394 @@ function vectorToSVG(vec, matWidthMm, matHeightMm) {
   out.push("</svg>");
   return out.join("\n") + "\n";
 }
+// =====================================================================================
+// SIMETRIA — molde tirado à mão e cortado com tesoura nunca é perfeito; o que vale é a forma
+// PRETENDIDA, que é simétrica. Passos:
+//  1) acha o eixo de simetria (ângulo e posição) pela sobreposição da peça com o próprio espelho;
+//  2) faz a média da peça com o espelho (média dos campos de distância com sinal: alinha
+//     detalhes deslocados e devolve uma forma simétrica e suave);
+//  3) acaba o contorno (suaviza, arcos, retas) e MONTA A PEÇA COM UMA METADE ESPELHADA, então a
+//     simetria no DXF é exata, arcos inclusive (bulge do espelho tem o mesmo sinal ao inverter
+//     o sentido de percurso).
+// =====================================================================================
+
+function symCentroid(poly) {
+  let a = 0, cx = 0, cy = 0;
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const p = poly[i], q = poly[(i + 1) % n], cr = p.x * q.y - q.x * p.y;
+    a += cr; cx += (p.x + q.x) * cr; cy += (p.y + q.y) * cr;
+  }
+  if (Math.abs(a) < 1e-9) return { x: poly[0].x, y: poly[0].y };
+  return { x: cx / (3 * a), y: cy / (3 * a) };
+}
+
+// preenche o polígono (mm) numa grade: pixel (i,j) tem centro em (x0+(i+.5)/g, y0+(j+.5)/g)
+function symRaster(poly, x0, y0, W, H, g) {
+  const mask = new Uint8Array(W * H);
+  const n = poly.length;
+  for (let j = 0; j < H; j++) {
+    const y = y0 + (j + 0.5) / g;
+    const xs = [];
+    for (let i = 0; i < n; i++) {
+      const a = poly[i], b = poly[(i + 1) % n];
+      if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) xs.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const i0 = Math.ceil((xs[k] - x0) * g - 0.5), i1 = Math.floor((xs[k + 1] - x0) * g - 0.5);
+      for (let i = Math.max(0, i0); i <= Math.min(W - 1, i1); i++) mask[j * W + i] = 1;
+    }
+  }
+  return mask;
+}
+
+// Candidatos a eixo de simetria, do mais para o menos simétrico: [{ cx, cy, ux, uy, nx, ny, angleDeg, iou }]
+// (cx,cy = ponto do eixo; u = direção; n = normal; iou = sobreposição da peça com o espelho)
+function symFindAxes(poly) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of poly) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+  const g = 1; // 1 px/mm
+  const x0 = minX - 3, y0 = minY - 3;
+  const W = Math.ceil((maxX - minX + 6) * g), H = Math.ceil((maxY - minY + 6) * g);
+  const mask = symRaster(poly, x0, y0, W, H, g);
+  const xs = [], ys = [];
+  let count = 0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) if (mask[j * W + i]) count++;
+  const stride = Math.max(1, Math.round(count / 30000));
+  let c = 0;
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      if (!mask[j * W + i]) continue;
+      if (c++ % stride === 0) { xs.push(x0 + (i + 0.5) / g); ys.push(y0 + (j + 0.5) / g); }
+    }
+  }
+  const N = xs.length;
+  if (N < 50) return [];
+  const cen = symCentroid(poly);
+  const score = (th, off) => {
+    const nx = -Math.sin(th), ny = Math.cos(th);
+    let hit = 0;
+    for (let k = 0; k < N; k++) {
+      const d = (xs[k] - cen.x) * nx + (ys[k] - cen.y) * ny - off;
+      const i = Math.floor((xs[k] - 2 * d * nx - x0) * g), j = Math.floor((ys[k] - 2 * d * ny - y0) * g);
+      if (i >= 0 && j >= 0 && i < W && j < H && mask[j * W + i]) hit++;
+    }
+    return hit / (2 * N - hit);
+  };
+  const deg = Math.PI / 180;
+  const coarse = [];
+  for (let a = 0; a < 180; a += 3) coarse.push({ th: a * deg, s: score(a * deg, 0) });
+  const peaks = [];
+  for (let k = 0; k < coarse.length; k++) {
+    const p = coarse[(k - 1 + coarse.length) % coarse.length].s, q = coarse[(k + 1) % coarse.length].s;
+    if (coarse[k].s >= p && coarse[k].s >= q) peaks.push(coarse[k]);
+  }
+  peaks.sort((a, b) => b.s - a.s);
+  const out = [];
+  for (const pk of peaks.slice(0, 5)) {
+    let th = pk.th, off = 0, best = pk.s;
+    for (const [dth, doff] of [[0.6 * deg, 1.5], [0.15 * deg, 0.4], [0.04 * deg, 0.1]]) {
+      for (let pass = 0; pass < 2; pass++) {
+        let bt = th, bo = off, bs = best;
+        for (let a = -3; a <= 3; a++) {
+          for (let b = -3; b <= 3; b++) {
+            const s2 = score(th + a * dth, off + b * doff);
+            if (s2 > bs) { bs = s2; bt = th + a * dth; bo = off + b * doff; }
+          }
+        }
+        th = bt; off = bo; best = bs;
+      }
+    }
+    const nx = -Math.sin(th), ny = Math.cos(th);
+    const ang = (((th / deg) % 180) + 180) % 180;
+    if (out.some((o) => Math.min(Math.abs(o.angleDeg - ang), 180 - Math.abs(o.angleDeg - ang)) < 12)) continue;
+    out.push({ cx: cen.x + nx * off, cy: cen.y + ny * off, ux: Math.cos(th), uy: Math.sin(th), nx, ny, angleDeg: ang, iou: best });
+  }
+  return out.sort((a, b) => b.iou - a.iou).slice(0, 3);
+}
+
+// transformada de distância euclidiana (quadrado, em px²) — Felzenszwalb; feature=1 onde a distância é zero
+function symEDT(feature, W, H) {
+  const INF = 1e12, N = W * H, f = new Float32Array(N);
+  for (let i = 0; i < N; i++) f[i] = feature[i] ? 0 : INF;
+  const n = Math.max(W, H), v = new Int32Array(n), z = new Float64Array(n + 1), src = new Float64Array(n);
+  const run = (len, read, write) => {
+    for (let q = 0; q < len; q++) src[q] = read(q);
+    let k = 0;
+    v[0] = 0; z[0] = -INF; z[1] = INF;
+    for (let q = 1; q < len; q++) {
+      let s;
+      for (;;) {
+        const p = v[k];
+        s = ((src[q] + q * q) - (src[p] + p * p)) / (2 * q - 2 * p);
+        if (s <= z[k]) { k--; if (k < 0) { k = 0; break; } } else break;
+      }
+      k++; v[k] = q; z[k] = s; z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < len; q++) {
+      while (z[k + 1] < q) k++;
+      const p = v[k];
+      write(q, (q - p) * (q - p) + src[p]);
+    }
+  };
+  for (let x = 0; x < W; x++) run(H, (y) => f[y * W + x], (y, val) => { f[y * W + x] = val; });
+  for (let y = 0; y < H; y++) run(W, (x) => f[y * W + x], (x, val) => { f[y * W + x] = val; });
+  return f;
+}
+
+// marching squares (nível 0, positivo = dentro) em campo W x H; devolve laços em coordenadas de grade
+function symMarching(f, W, H) {
+  const segA = [], segB = [], adj = new Map();
+  const addSeg = (ka, kb) => {
+    const s = segA.length;
+    segA.push(ka); segB.push(kb);
+    (adj.get(ka) || adj.set(ka, []).get(ka)).push(s);
+    (adj.get(kb) || adj.set(kb, []).get(kb)).push(s);
+  };
+  for (let y = 0; y < H - 1; y++) {
+    for (let x = 0; x < W - 1; x++) {
+      const i = y * W + x;
+      const fa = f[i], fb = f[i + 1], fc = f[i + W + 1], fd = f[i + W];
+      const code = (fa > 0 ? 1 : 0) | (fb > 0 ? 2 : 0) | (fc > 0 ? 4 : 0) | (fd > 0 ? 8 : 0);
+      if (code === 0 || code === 15) continue;
+      const T_ = i * 2, B_ = (i + W) * 2, L_ = i * 2 + 1, R_ = (i + 1) * 2 + 1;
+      switch (code) {
+        case 1: case 14: addSeg(L_, T_); break;
+        case 2: case 13: addSeg(T_, R_); break;
+        case 3: case 12: addSeg(L_, R_); break;
+        case 4: case 11: addSeg(R_, B_); break;
+        case 6: case 9: addSeg(T_, B_); break;
+        case 7: case 8: addSeg(L_, B_); break;
+        case 5: case 10: {
+          const centerIn = (fa + fb + fc + fd) / 4 > 0;
+          if ((code === 5) === centerIn) { addSeg(T_, R_); addSeg(L_, B_); } else { addSeg(L_, T_); addSeg(R_, B_); }
+          break;
+        }
+      }
+    }
+  }
+  const keyPt = (k) => {
+    const idx = k >> 1, px = idx % W, py = (idx - px) / W;
+    if (k & 1) { const a = f[idx], b = f[idx + W]; return [px, py + a / (a - b)]; }
+    const a = f[idx], b = f[idx + 1];
+    return [px + a / (a - b), py];
+  };
+  const visited = new Uint8Array(segA.length), loops = [];
+  for (let s = 0; s < segA.length; s++) {
+    if (visited[s]) continue;
+    visited[s] = 1;
+    const start = segA[s];
+    let cur = segB[s], closed = false;
+    const loop = [keyPt(start)];
+    for (let guard = 0; guard < segA.length + 2; guard++) {
+      if (cur === start) { closed = true; break; }
+      loop.push(keyPt(cur));
+      let ns = -1;
+      for (const c of (adj.get(cur) || [])) if (!visited[c]) { ns = c; break; }
+      if (ns < 0) break;
+      visited[ns] = 1;
+      cur = segA[ns] === cur ? segB[ns] : segA[ns];
+    }
+    if (closed && loop.length >= 6) loops.push(loop);
+  }
+  return loops;
+}
+
+// ---- geometria de segmentos com bulge ----
+function symSegArc(P, Q, b) {
+  const dx = Q.x - P.x, dy = Q.y - P.y, c = Math.hypot(dx, dy) || 1e-9;
+  const sweep = 4 * Math.atan(b);
+  const h = (c / 2) * ((1 - b * b) / (2 * b));
+  const cx = (P.x + Q.x) / 2 + (-dy / c) * h, cy = (P.y + Q.y) / 2 + (dx / c) * h;
+  return { cx, cy, r: Math.hypot(P.x - cx, P.y - cy), a0: Math.atan2(P.y - cy, P.x - cx), sweep };
+}
+const symTwoPi = Math.PI * 2;
+const symSignedMod = (ang, sign) => sign * ((((sign * ang) % symTwoPi) + symTwoPi) % symTwoPi);
+
+// Reflete um contorno (vértices + bulge) e monta o laço simétrico a partir de UMA metade.
+// axis = { cx, cy, ux, uy, nx, ny }. Devolve null se o contorno não cruza o eixo em exatamente 2 pontos.
+function symMirrorHalf(fp, axis) {
+  const n = fp.length;
+  const side = (p) => (p.x - axis.cx) * axis.nx + (p.y - axis.cy) * axis.ny;
+  const refl = (p) => { const d = side(p); return { x: p.x - 2 * d * axis.nx, y: p.y - 2 * d * axis.ny }; };
+  const onAxis = (p) => { const d = side(p); return { x: p.x - d * axis.nx, y: p.y - d * axis.ny }; };
+  // cruzamentos: { seg, pt, kind }
+  const cross = [];
+  for (let k = 0; k < n; k++) {
+    const P = fp[k], Q = fp[(k + 1) % n], b = P.bulge || 0;
+    if (!b) {
+      const s0 = side(P), s1 = side(Q);
+      if ((s0 < 0 && s1 > 0) || (s0 > 0 && s1 < 0)) { const u = s0 / (s0 - s1); cross.push({ seg: k, pt: { x: P.x + u * (Q.x - P.x), y: P.y + u * (Q.y - P.y) }, u }); }
+      else if (s0 === 0) cross.push({ seg: k, pt: { x: P.x, y: P.y }, u: 0 });
+    } else {
+      const A = symSegArc(P, Q, b), sg = Math.sign(A.sweep);
+      const ox = axis.cx - A.cx, oy = axis.cy - A.cy;
+      const B2 = axis.ux * ox + axis.uy * oy, C2 = ox * ox + oy * oy - A.r * A.r, disc = B2 * B2 - C2;
+      if (disc <= 0) continue;
+      for (const t of [-B2 - Math.sqrt(disc), -B2 + Math.sqrt(disc)]) {
+        const pt = { x: axis.cx + t * axis.ux, y: axis.cy + t * axis.uy };
+        const a = Math.atan2(pt.y - A.cy, pt.x - A.cx), d = sg * symSignedMod(a - A.a0, sg);
+        if (d > 1e-9 && d < Math.abs(A.sweep) - 1e-9) cross.push({ seg: k, pt, arcAngle: a });
+      }
+    }
+  }
+  // ordena pelo percurso do laço e junta cruzamentos muito próximos (< 0,6 mm) num só: acontece
+  // quando o eixo passa por um detalhe pequeno (fundo de fenda, ponta de arco encostando no eixo)
+  for (const c of cross) {
+    const P = fp[c.seg], Q = fp[(c.seg + 1) % n];
+    if (c.u !== undefined) c.ord = c.seg + c.u;
+    else { const A = symSegArc(P, Q, P.bulge), sg = Math.sign(A.sweep); c.ord = c.seg + (sg * symSignedMod(c.arcAngle - A.a0, sg)) / Math.abs(A.sweep); }
+  }
+  cross.sort((p, q) => p.ord - q.ord);
+  let clusters = [];
+  for (const c of cross) {
+    const last = clusters[clusters.length - 1];
+    if (last && Math.hypot(last[last.length - 1].pt.x - c.pt.x, last[last.length - 1].pt.y - c.pt.y) < 0.6) last.push(c);
+    else clusters.push([c]);
+  }
+  if (clusters.length > 2) { // o último pode ser vizinho do primeiro (volta do laço)
+    const f0 = clusters[0][0], l0 = clusters[clusters.length - 1];
+    if (Math.hypot(f0.pt.x - l0[l0.length - 1].pt.x, f0.pt.y - l0[l0.length - 1].pt.y) < 0.6) { clusters[0] = l0.concat(clusters[0]); clusters.pop(); }
+  }
+  if (clusters.length !== 2) return null;
+  // a metade vai do ÚLTIMO cruzamento do 1º grupo ao PRIMEIRO do 2º (o que está dentro dos grupos é descartado)
+  const c1 = clusters[0][clusters[0].length - 1], c2 = clusters[1][0];
+  // metade: de c1 até c2 seguindo o laço
+  const half = []; // { p, b } : vértice e bulge do segmento que sai dele
+  const subArc = (P, Q, b, fromPt, toPt) => { // bulge do pedaço de arco entre dois pontos dele
+    const A = symSegArc(P, Q, b), sg = Math.sign(A.sweep);
+    const a1 = Math.atan2(fromPt.y - A.cy, fromPt.x - A.cx), a2 = Math.atan2(toPt.y - A.cy, toPt.x - A.cx);
+    return Math.tan(symSignedMod(a2 - a1, sg) / 4);
+  };
+  const X1 = onAxis(c1.pt), X2 = onAxis(c2.pt);
+  const sP = fp[c1.seg], sQ = fp[(c1.seg + 1) % n];
+  if (c1.seg === c2.seg) { // os dois cruzamentos no mesmo segmento (arco que cruza 2x): improvável, aborta
+    return null;
+  }
+  half.push({ p: X1, b: sP.bulge ? subArc(sP, sQ, sP.bulge, c1.pt, sQ) : 0 });
+  for (let k = c1.seg + 1; k !== c2.seg; k = (k + 1) % n) half.push({ p: { x: fp[k].x, y: fp[k].y }, b: fp[k].bulge || 0 });
+  const eP = fp[c2.seg], eQ = fp[(c2.seg + 1) % n];
+  half.push({ p: { x: eP.x, y: eP.y }, b: eP.bulge ? subArc(eP, eQ, eP.bulge, eP, c2.pt) : 0 });
+  half.push({ p: X2, b: 0 });
+  // se um vértice real coincide com o cruzamento, evita duplicar
+  const dedup = [half[0]];
+  for (let k = 1; k < half.length; k++) if (Math.hypot(half[k].p.x - dedup[dedup.length - 1].p.x, half[k].p.y - dedup[dedup.length - 1].p.y) > 1e-6) dedup.push(half[k]);
+  else dedup[dedup.length - 1].b = half[k].b || dedup[dedup.length - 1].b;
+  const m = dedup.length - 1;
+  if (m < 1) return null;
+  // laço: V0..Vm e depois o espelho de Vm-1..V1 (bulge do espelho em sentido inverso = mesmo sinal)
+  const out = [];
+  for (let k = 0; k <= m; k++) out.push({ x: dedup[k].p.x, y: dedup[k].p.y, bulge: k < m ? dedup[k].b : dedup[m - 1].b });
+  for (let k = m - 1; k >= 1; k--) { const r = refl(dedup[k].p); out.push({ x: r.x, y: r.y, bulge: dedup[k - 1].b }); }
+  // limpeza nos dois pontos do eixo: junta arcos concêntricos / retas colineares
+  const clean = (arr, idx) => {
+    const L = arr.length, prev = arr[(idx - 1 + L) % L], cur = arr[idx], nxt = arr[(idx + 1) % L];
+    if (prev.bulge && cur.bulge) {
+      const A1 = symSegArc(prev, cur, prev.bulge), A2 = symSegArc(cur, nxt, cur.bulge);
+      if (Math.hypot(A1.cx - A2.cx, A1.cy - A2.cy) < 0.05 && Math.sign(A1.sweep) === Math.sign(A2.sweep)) {
+        prev.bulge = Math.tan((A1.sweep + A2.sweep) / 4);
+        arr.splice(idx, 1);
+        return true;
+      }
+    } else if (!prev.bulge && !cur.bulge) {
+      const d1x = cur.x - prev.x, d1y = cur.y - prev.y, d2x = nxt.x - cur.x, d2y = nxt.y - cur.y;
+      const l1 = Math.hypot(d1x, d1y), l2 = Math.hypot(d2x, d2y);
+      if (l1 > 1e-9 && l2 > 1e-9 && Math.abs(d1x * d2y - d1y * d2x) / (l1 * l2) < 0.01 && d1x * d2x + d1y * d2y > 0) { arr.splice(idx, 1); return true; }
+    }
+    return false;
+  };
+  // o índice do segundo ponto do eixo (Vm) muda se o primeiro for removido: trata o maior primeiro
+  clean(out, m);
+  clean(out, 0);
+  return out;
+}
+
+// Simetriza o contorno externo (pontos densos em mm). Devolve
+// { loop: { pts (com bulge), ... }, axis, iou, exact, maxShiftMm, meanShiftMm, asymMaxMm } ou { error }.
+function symSymmetrizeOuter(dense, axis, opts) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of dense) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+  const marg = 12;
+  let g = 2;
+  while (((maxX - minX + 2 * marg) * g) * ((maxY - minY + 2 * marg) * g) > 3.2e6 && g > 0.6) g -= 0.2;
+  const x0 = minX - marg, y0 = minY - marg;
+  const W = Math.ceil((maxX - minX + 2 * marg) * g), H = Math.ceil((maxY - minY + 2 * marg) * g);
+  const mask = symRaster(dense, x0, y0, W, H, g);
+  const N = W * H, inv = new Uint8Array(N);
+  for (let i = 0; i < N; i++) inv[i] = mask[i] ? 0 : 1;
+  const dIn = symEDT(inv, W, H), dOut = symEDT(mask, W, H);
+  const sdf = new Float32Array(N);
+  for (let i = 0; i < N; i++) sdf[i] = mask[i] ? (Math.sqrt(dIn[i]) - 0.5) / g : -(Math.sqrt(dOut[i]) - 0.5) / g;
+  // campo simétrico: média do campo com o campo refletido
+  const S = new Float32Array(N);
+  const sampleSdf = (fx, fy) => {
+    const xi = Math.max(0, Math.min(W - 1.001, fx)), yi = Math.max(0, Math.min(H - 1.001, fy));
+    const i0 = Math.floor(xi), j0 = Math.floor(yi), tx = xi - i0, ty = yi - j0;
+    const a = sdf[j0 * W + i0], b = sdf[j0 * W + i0 + 1], c = sdf[(j0 + 1) * W + i0], d = sdf[(j0 + 1) * W + i0 + 1];
+    return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty;
+  };
+  for (let j = 0; j < H; j++) {
+    for (let i = 0; i < W; i++) {
+      const x = x0 + (i + 0.5) / g, y = y0 + (j + 0.5) / g;
+      const dd = (x - axis.cx) * axis.nx + (y - axis.cy) * axis.ny;
+      const rx = x - 2 * dd * axis.nx, ry = y - 2 * dd * axis.ny;
+      S[j * W + i] = 0.5 * (sdf[j * W + i] + sampleSdf((rx - x0) * g - 0.5, (ry - y0) * g - 0.5));
+    }
+  }
+  const loopsG = symMarching(S, W, H);
+  if (!loopsG.length) return { error: "simetrização sem contorno" };
+  const toMm = (l) => l.map((p) => ({ x: x0 + (p[0] + 0.5) / g, y: y0 + (p[1] + 0.5) / g }));
+  let best = null, bestA = 0;
+  for (const l of loopsG) { const m = toMm(l); const a = Math.abs(vecSignedArea(m)); if (a > bestA) { bestA = a; best = m; } }
+  // laço denso simétrico: mantém uma metade do laço médio e espelha (exatidão), e só então acaba o contorno
+  const fin = vecFinishLoops([best], opts || {});
+  if (!fin) return { error: "simetrização sem contorno final" };
+  let main = fin.filter((l) => !l.hole).sort((a, b) => b.areaMm2 - a.areaMm2)[0];
+  let pts = main.pts, exact = false;
+  const mirrored = symMirrorHalf(pts, axis);
+  if (mirrored) { pts = mirrored; exact = true; }
+  // quanto a peça mudou: distância dos pontos densos originais ao contorno final (amostrado)
+  const denseFinal = expandLoop(pts, 16);
+  const segDist = (p, a, b) => { const dx = b.x - a.x, dy = b.y - a.y; const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1))); return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy); };
+  const distTo = (p, poly) => { let m = 1e9; for (let i = 0; i < poly.length; i++) m = Math.min(m, segDist(p, poly[i], poly[(i + 1) % poly.length])); return m; };
+  let sum = 0, mx = 0, cnt = 0;
+  const step = Math.max(1, Math.floor(dense.length / 400));
+  for (let i = 0; i < dense.length; i += step) { const d = distTo(dense[i], denseFinal); sum += d; if (d > mx) mx = d; cnt++; }
+  // assimetria original: distância do contorno original ao seu espelho
+  const reflPoly = dense.map((p) => { const d = (p.x - axis.cx) * axis.nx + (p.y - axis.cy) * axis.ny; return { x: p.x - 2 * d * axis.nx, y: p.y - 2 * d * axis.ny }; });
+  let amax = 0;
+  for (let i = 0; i < dense.length; i += step) { const d = distTo(dense[i], reflPoly); if (d > amax) amax = d; }
+  return { pts, exact, maxShiftMm: mx, meanShiftMm: sum / cnt, asymMaxMm: amax };
+}
+
+// Furos redondos: espelha em pares (média das posições); furo no eixo fica no eixo.
+function symSymmetrizeHoles(circles, axis) {
+  const refl = (c) => { const d = (c.cx - axis.cx) * axis.nx + (c.cy - axis.cy) * axis.ny; return { cx: c.cx - 2 * d * axis.nx, cy: c.cy - 2 * d * axis.ny, r: c.r }; };
+  const used = new Array(circles.length).fill(false), out = [];
+  let unpaired = 0;
+  for (let i = 0; i < circles.length; i++) {
+    if (used[i]) continue;
+    const c = circles[i], d = (c.cx - axis.cx) * axis.nx + (c.cy - axis.cy) * axis.ny;
+    if (Math.abs(d) < 1.5) { out.push({ cx: c.cx - d * axis.nx, cy: c.cy - d * axis.ny, r: c.r }); used[i] = true; continue; }
+    const rc = refl(c);
+    let bj = -1, bd = 3;
+    for (let j = 0; j < circles.length; j++) {
+      if (j === i || used[j]) continue;
+      const dd = Math.hypot(circles[j].cx - rc.cx, circles[j].cy - rc.cy);
+      if (dd < bd && Math.abs(circles[j].r - c.r) < 0.8) { bd = dd; bj = j; }
+    }
+    if (bj < 0) { out.push({ cx: c.cx, cy: c.cy, r: c.r }); used[i] = true; unpaired++; continue; }
+    const o = circles[bj], ro = refl(o);
+    const m = { cx: (c.cx + ro.cx) / 2, cy: (c.cy + ro.cy) / 2, r: (c.r + o.r) / 2 };
+    const m2 = refl(m);
+    out.push(m, m2);
+    used[i] = used[bj] = true;
+  }
+  return { circles: out, unpaired };
+}
+
 /* VECTOR-END */
 
 function markerCenter(corners) {
@@ -2791,6 +3181,7 @@ const vectorActions = el("vectorActions");
 const vectorShow = el("vectorShow");
 const vectorWindows = el("vectorWindows");
 const vectorInk = el("vectorInk");
+const vectorSym = el("vectorSym");
 const vectorOverlay = el("vectorOverlay");
 const btnDxf = el("btnDxf");
 const btnSvg = el("btnSvg");
@@ -2808,7 +3199,13 @@ function bindFlag(cb, key, onChange) {
 const rerunVector = () => { if (currentResult) currentResult.vectorPromise = runVectorization(currentResult); };
 bindFlag(vectorToggle, "moldeflat_vector_auto", rerunVector);
 bindFlag(vectorInk, "moldeflat_vector_ink", rerunVector);
-bindFlag(vectorWindows, "moldeflat_vector_windows", () => { if (currentResult && currentResult.vectorRaw) buildVectorView(currentResult); });
+const rebuildView = () => { if (currentResult && currentResult.vectorRaw) currentResult.vectorPromise = buildVectorView(currentResult); };
+bindFlag(vectorWindows, "moldeflat_vector_windows", rebuildView);
+try { const sv = localStorage.getItem("moldeflat_vector_sym"); if (sv) vectorSym.value = sv; } catch (e) { /* padrão */ }
+vectorSym.addEventListener("change", () => {
+  try { localStorage.setItem("moldeflat_vector_sym", vectorSym.value); } catch (e) { /* ok */ }
+  rebuildView();
+});
 vectorShow.addEventListener("change", () => vectorOverlay.classList.toggle("hidden", !vectorShow.checked));
 
 function clearVectorUI() {
@@ -2842,6 +3239,19 @@ function drawVectorOverlay(view, pxPerMm) {
     ctx.beginPath();
     ln.pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), X(p.y)) : ctx.moveTo(X(p.x), X(p.y))));
     ctx.stroke();
+  }
+  if (view.axes && view.axes.length) {
+    ctx.save();
+    ctx.strokeStyle = "#00e5ff";
+    ctx.lineWidth = Math.max(1.5, W / 700);
+    ctx.setLineDash([Math.max(8, W / 90), Math.max(6, W / 120)]);
+    for (const a of view.axes) {
+      ctx.beginPath();
+      ctx.moveTo(X(a.cx - a.ux * a.len), X(a.cy - a.uy * a.len));
+      ctx.lineTo(X(a.cx + a.ux * a.len), X(a.cy + a.uy * a.len));
+      ctx.stroke();
+    }
+    ctx.restore();
   }
   vectorOverlay.classList.toggle("hidden", !vectorShow.checked);
 }
@@ -2887,36 +3297,113 @@ async function runVectorization(holder) {
     return;
   }
   holder.vectorRaw = vec;
-  buildVectorView(holder);
+  holder.symAxes = {};
+  holder.symCache = new Map();
+  await buildVectorView(holder);
 }
 
 // Monta o que será exportado a partir do resultado bruto e das opções marcadas.
-function buildVectorView(holder) {
+// Com simetria ligada, cada peça é simetrizada em torno do seu melhor eixo (se for simétrica o bastante).
+const SYM_MIN_IOU = 0.9;      // sobreposição mínima com o espelho pra considerar a peça simétrica
+const SYM_MAX_SHIFT_MM = 5;    // correção máxima plausível de recorte à mão; acima disso é detalhe de projeto
+async function buildVectorView(holder) {
   const raw = holder.vectorRaw;
   const { outW, outH, pxPerMm } = holder.geo;
+  const token = (holder.viewToken = (holder.viewToken || 0) + 1);
   let loops;
   if (vectorWindows.checked) loops = raw.loops.filter((l) => !l.hole || l.circle || l.areaMm2 >= 300);
   else loops = raw.silhouette || raw.loops.filter((l) => !l.hole || l.circle);
-  const view = { loops, lines: vectorInk.checked ? (raw.lines || []) : [] };
+  const notes = new Map(); // índice do contorno externo -> texto da simetria
+  const axes = [];
+  if (vectorSym.value !== "off") {
+    loops = loops.slice();
+    const pickAxis = vectorSym.value === "axis2" ? 1 : 0;
+    const inPoly = (pt, poly) => {
+      let c = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        if ((poly[i].y > pt.y) !== (poly[j].y > pt.y) && pt.x < ((poly[j].x - poly[i].x) * (pt.y - poly[i].y)) / (poly[j].y - poly[i].y) + poly[i].x) c = !c;
+      }
+      return c;
+    };
+    const outerIdx = [];
+    loops.forEach((l, i) => { if (!l.hole && !l.circle && l.raw) outerIdx.push(i); });
+    const mode = vectorSym.value; // auto | axis2 | force
+    const force = mode === "force";
+    const f1 = (v) => v.toFixed(1).replace(".", ",");
+    for (const idx of outerIdx) {
+      const l = loops[idx];
+      await nextFrame();
+      if (holder.viewToken !== token) return; // outra opção foi marcada no meio do cálculo
+      const rawKey = holder.vectorRaw.silhouette ? "s" : "d";
+      const cacheKey = rawKey + idx + "|" + pickAxis + "|" + l.raw.length;
+      let ca = holder.symCache.get(cacheKey);
+      if (!ca) { ca = { axis: null, res: null, err: "" }; holder.symCache.set(cacheKey, ca); }
+      try {
+        if (!ca.axis && !ca.err) {
+          let axs = holder.symAxes[rawKey + idx];
+          if (!axs) axs = holder.symAxes[rawKey + idx] = symFindAxes(l.raw);
+          if (axs.length) ca.axis = axs[Math.min(pickAxis, axs.length - 1)];
+          else ca.err = "sem eixo";
+        }
+        // só calcula a simetrização (mais pesada) quando a peça tem chance de ser aceita
+        if (ca.axis && !ca.res && !ca.err && (force || ca.axis.iou >= SYM_MIN_IOU)) {
+          const r = symSymmetrizeOuter(l.raw, ca.axis, {});
+          if (r.error) ca.err = r.error; else ca.res = r;
+        }
+      } catch (e) {
+        ca.err = e.message;
+      }
+      let note = "", apply = false;
+      if (!ca.axis) note = "sem eixo de simetria claro — mantida como está";
+      else {
+        const pct = (ca.axis.iou * 100).toFixed(1).replace(".", ",") + "%";
+        if (!force && ca.axis.iou < SYM_MIN_IOU) note = "não parece simétrica (sobreposição com o espelho " + pct + ") — mantida como está";
+        else if (!ca.res) note = "simetrização indisponível (" + ca.err + ") — mantida como está";
+        else if (!force && ca.res.maxShiftMm > SYM_MAX_SHIFT_MM) {
+          note = "tem detalhe só de um lado (a simetria mudaria até " + f1(ca.res.maxShiftMm) + " mm) — mantida como está; escolha \"forçar simetria\" para impor";
+        } else {
+          apply = true;
+          note = "simétrica (" + pct + (ca.res.exact ? "" : ", aproximada") + "), ajuste máx " + f1(ca.res.maxShiftMm) + " mm (média " + f1(ca.res.meanShiftMm) + ")";
+        }
+      }
+      notes.set(idx, note);
+      if (!apply) continue;
+      // furos redondos dentro desta peça: espelhados em pares em torno do mesmo eixo
+      const mine = [];
+      loops.forEach((c, k) => { if (c.hole && c.circle && inPoly({ x: c.circle.cx, y: c.circle.cy }, l.raw)) mine.push(k); });
+      if (mine.length) {
+        const hres = symSymmetrizeHoles(mine.map((k) => loops[k].circle), ca.axis);
+        mine.forEach((k, j) => { loops[k] = { pts: [], circle: hres.circles[j], hole: true, areaMm2: loops[k].areaMm2, perimeterMm: loops[k].perimeterMm }; });
+      }
+      loops[idx] = { pts: ca.res.pts, circle: null, hole: false, areaMm2: l.areaMm2, perimeterMm: l.perimeterMm };
+      let mnx = Infinity, mny = Infinity, mxx = -Infinity, mxy = -Infinity;
+      for (const p of l.raw) { mnx = Math.min(mnx, p.x); mny = Math.min(mny, p.y); mxx = Math.max(mxx, p.x); mxy = Math.max(mxy, p.y); }
+      axes.push({ cx: ca.axis.cx, cy: ca.axis.cy, ux: ca.axis.ux, uy: ca.axis.uy, len: Math.hypot(mxx - mnx, mxy - mny) / 2 + 15 });
+    }
+  }
+  const view = { loops, lines: vectorInk.checked ? (raw.lines || []) : [], axes };
   view.dxf = vectorToDXF(view, outH / pxPerMm);
   view.svg = vectorToSVG(view, outW / pxPerMm, outH / pxPerMm);
   holder.vector = view;
-  if (currentResult !== holder) return;
+  if (currentResult !== holder || holder.viewToken !== token) return;
   drawVectorOverlay(view, pxPerMm);
   const fmt = (v) => v.toFixed(1).replace(".", ",");
   const outer = loops.filter((l) => !l.hole);
   const holes = loops.length - outer.length;
   const nodes = loops.reduce((a, l) => a + (l.circle ? 1 : l.pts.length), 0) + view.lines.reduce((a, l) => a + l.pts.length, 0);
   const arcCount = loops.reduce((a, l) => a + (l.circle ? 0 : l.pts.filter((p) => p.bulge).length), 0);
-  const dims = outer.slice(0, 8).map((l, i) => {
+  const dims = [];
+  loops.forEach((l, i) => {
+    if (l.hole || dims.length >= 8) return;
     const dense = expandLoop(l.pts, 10);
     const xs = dense.map((p) => p.x), ys = dense.map((p) => p.y);
-    return "Peça " + (i + 1) + ": " + fmt(Math.max(...xs) - Math.min(...xs)) + " x " + fmt(Math.max(...ys) - Math.min(...ys)) + " mm";
+    dims.push("Peça " + (dims.length + 1) + ": " + fmt(Math.max(...xs) - Math.min(...xs)) + " x " + fmt(Math.max(...ys) - Math.min(...ys)) + " mm" + (notes.get(i) ? " · " + notes.get(i) : ""));
   });
   vectorInfo.textContent =
     outer.length + " peça(s), uma linha fechada cada" + (holes ? ", " + holes + " furo(s)" : "") +
     (arcCount ? ", " + arcCount + " arco(s)" : "") + (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
     dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar." +
+    (axes.length ? " Linha azul tracejada = eixo de simetria." : "") +
     (holder.vecNote || "") + (holder.vecSeconds != null ? " (vetorizado em " + holder.vecSeconds.toFixed(1).replace(".", ",") + " s)" : "");
   vectorActions.classList.remove("hidden");
 }
