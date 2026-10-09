@@ -34,7 +34,20 @@
           "x_mm": 80,
           "y_mm": 1420
         }
-      ]
+      ],
+      "print_scale": {
+        "x": 0.9798,
+        "y": 0.9724,
+        "medido_trena_mm": {
+          "ID0_ID1": 823,
+          "ID0_ID3": 1303
+        },
+        "esperado_mm": {
+          "ID0_ID1": 840,
+          "ID0_ID3": 1340
+        },
+        "data": "2026-10-09"
+      }
     },
     {
       "id": "tapete_900x1200_fita",

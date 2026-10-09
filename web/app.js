@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.4";
+const APP_VERSION = "2026-10-09.5";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -61,16 +61,39 @@ async function loadProfiles() {
     updateProfileInfo();
     openCamera();
   });
-  currentProfile = matConfig.profiles[0];
+  currentProfile = effectiveProfile(matConfig.profiles[0]);
   updateProfileInfo();
   openCamera();
 }
 
+// Escala de impressão MEDIDA do tapete físico (trena entre marcadores / valor do projeto).
+// O check de tamanho dos marcadores não enxerga isso: se o tapete inteiro saiu 3% menor,
+// marcadores e distâncias encolhem juntos e o check continua dando ~0%, mas todas as
+// medidas em mm saem erradas. "print_scale": { "x": 0.967, "y": 0.967 } no perfil corrige:
+// o app passa a usar as dimensões e posições REAIS do tapete impresso.
+function effectiveProfile(p) {
+  const sx = (p.print_scale && p.print_scale.x) || 1;
+  const sy = (p.print_scale && p.print_scale.y) || 1;
+  if (sx === 1 && sy === 1) return p;
+  const sAvg = (sx + sy) / 2;
+  return {
+    ...p,
+    nominal: p,
+    width_mm: p.width_mm * sx,
+    height_mm: p.height_mm * sy,
+    marker_size_mm: p.marker_size_mm * sAvg,
+    margin_mm: p.margin_mm * sAvg,
+    markers: p.markers.map((m) => (m.x_mm != null ? { ...m, x_mm: m.x_mm * sx, y_mm: m.y_mm * sy } : m)),
+  };
+}
+
 function updateProfileInfo() {
-  currentProfile = matConfig.profiles.find((p) => p.id === profileSelect.value);
-  const p = currentProfile;
+  currentProfile = effectiveProfile(matConfig.profiles.find((p) => p.id === profileSelect.value));
+  const p = currentProfile.nominal || currentProfile;
+  const ps = currentProfile.nominal ? currentProfile.print_scale : null;
   profileInfo.textContent =
     `${p.width_mm / 10} x ${p.height_mm / 10} cm · ${p.markers.length} marcadores de ${p.marker_size_mm / 10} cm · ` +
+    (ps ? `escala de impressão medida: ${(ps.x * 100).toFixed(2).replace(".", ",")}% x ${(ps.y * 100).toFixed(2).replace(".", ",")}% · ` : "") +
     `precisa de pelo menos ${MIN_MARKERS_REQUIRED} visíveis para calibrar.` +
     (p.ribbon ? " Inclui fita de referência para maior precisão." : "") +
     (p.descricao ? ` ${p.descricao}` : "");
@@ -1104,7 +1127,13 @@ function locateConfident(seq, chunk, maxErrorRate, minMarginBits) {
 // suficientes — nesse caso o chamador deve continuar usando só os 4 cantos.
 function refineHomographyWithRibbon(profile, HroughInv, srcData, srcW, srcH, pxPerMm, cornerSrcPts, cornerDstPts) {
   const seqBits = Ribbon.deBruijn(2, profile.ribbon_bits || Ribbon.RIBBON_WINDOW_BITS);
-  const ribbonCells = Ribbon.buildRibbonCells(profile, seqBits);
+  // A fita é gerada nas medidas do projeto; se o tapete tem escala de impressão
+  // medida, as células (posição e tamanho) encolhem/esticam junto com ele.
+  let ribbonCells = Ribbon.buildRibbonCells(profile.nominal || profile, seqBits);
+  if (profile.nominal) {
+    const fx = profile.width_mm / profile.nominal.width_mm, fy = profile.height_mm / profile.nominal.height_mm;
+    ribbonCells = ribbonCells.map((c) => ({ ...c, x: c.x * fx, y: c.y * fy, w: c.w * fx, h: c.h * fy, cx: c.cx * fx, cy: c.cy * fy }));
+  }
 
   function grayAt(x, y) {
     const px = sampleBilinear(srcData, srcW, srcH, x, y);
@@ -1184,7 +1213,8 @@ function refineHomographyWithRibbon(profile, HroughInv, srcData, srcW, srcH, pxP
     const vx = axes.v.x * sign, vy = axes.v.y * sign;
     const foundV = findCrossing(sweep1D(cell.cx, cell.cy, vx, vy, 14, 0.5));
     if (!foundV) return null;
-    const [expPxV, expPyV] = applyH(HroughInv, (cell.cx + vx * 10) * pxPerMm, (cell.cy + vy * 10) * pxPerMm);
+    const halfBand = Math.min(cell.w, cell.h) / 2; // meia largura da faixa (10mm no projeto)
+    const [expPxV, expPyV] = applyH(HroughInv, (cell.cx + vx * halfBand) * pxPerMm, (cell.cy + vy * halfBand) * pxPerMm);
     const crossDelta = { dx: foundV.px - expPxV, dy: foundV.py - expPyV };
     return {
       px: seedPx + alongDelta.dx + crossDelta.dx,
