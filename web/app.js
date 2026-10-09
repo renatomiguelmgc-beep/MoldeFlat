@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.6";
+const APP_VERSION = "2026-10-09.7";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -1184,6 +1184,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
     }
   }
 
+  const traceLoops = (f) => {
   // marching squares com interpolação linear (sub-pixel)
   const segA = [], segB = [];
   const adj = new Map();
@@ -1298,8 +1299,11 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
     }
   }
 
+    return rawLoops;
+  };
+
   // simplificação Douglas-Peucker (tolerância 0,15 mm)
-  const TOL = 0.15;
+  const TOL = 0.4;
   const dp = (pts) => {
     const n = pts.length;
     const keepIdx = new Uint8Array(n);
@@ -1344,24 +1348,471 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
     return c;
   };
 
-  let loops = rawLoops.map((l) => simplifyClosed(l)).filter((l) => l.length >= 3 && Math.abs(signedArea(l)) >= 50 && perim(l) >= 30);
-  if (!loops.length) return { error: "Não consegui traçar o contorno da peça." };
-  loops = loops.map((pts, i) => {
-    let depth = 0;
-    loops.forEach((other, j) => { if (j !== i && inside(pts[0], other)) depth++; });
-    return { pts, hole: depth % 2 === 1, areaMm2: Math.abs(signedArea(pts)), perimeterMm: perim(pts) };
-  });
+  // Furo redondo (parafuso): circularidade alta + ajuste de círculo com resíduo pequeno vira
+  // CIRCLE no DXF. Furos pequenos só passam se forem redondos (senão é sujeira/ponto de tinta).
+  const fitCircle = (pts) => {
+    const n = pts.length;
+    let mx = 0, my = 0;
+    for (const p of pts) { mx += p.x; my += p.y; }
+    mx /= n; my /= n;
+    let Suu = 0, Suv = 0, Svv = 0, Suuu = 0, Svvv = 0, Suvv = 0, Svuu = 0;
+    for (const p of pts) {
+      const u = p.x - mx, v = p.y - my;
+      Suu += u * u; Suv += u * v; Svv += v * v; Suuu += u * u * u; Svvv += v * v * v; Suvv += u * v * v; Svuu += v * u * u;
+    }
+    const det = Suu * Svv - Suv * Suv;
+    if (Math.abs(det) < 1e-9) return null;
+    const uc = (Svv * (Suuu + Suvv) / 2 - Suv * (Svvv + Svuu) / 2) / det;
+    const vc = (Suu * (Svvv + Svuu) / 2 - Suv * (Suuu + Suvv) / 2) / det;
+    const cx = mx + uc, cy = my + vc;
+    const r = pts.reduce((a, p) => a + Math.hypot(p.x - cx, p.y - cy), 0) / n;
+    const maxRes = Math.max(...pts.map((p) => Math.abs(Math.hypot(p.x - cx, p.y - cy) - r)));
+    return { cx, cy, r, maxRes };
+  };
+  // Suaviza o ruído da borda (±0,2 mm) com média móvel de 9 pontos, MAS preserva os cantos:
+  // um ponto perto de uma virada brusca (>30° em ±6 pontos) fica onde está. Assim as retas saem
+  // retas (poucos nós na simplificação) e os cantos continuam vivos.
+  const smoothKeepCorners = (pts) => {
+    const n = pts.length;
+    if (n < 24) return pts;
+    const K = 6, HW = 4;
+    const corner = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = pts[(i - K + n) % n], b = pts[i], c = pts[(i + K) % n];
+      const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
+      const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+      if (l1 < 1e-9 || l2 < 1e-9) continue;
+      const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
+      if (cos < Math.cos((30 * Math.PI) / 180)) corner[i] = 1;
+    }
+    const near = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      if (!corner[i]) continue;
+      for (let k = -HW; k <= HW; k++) near[(i + k + n) % n] = 1;
+    }
+    return pts.map((p, i) => {
+      if (near[i]) return p;
+      let sx = 0, sy = 0;
+      for (let k = -HW; k <= HW; k++) { const q = pts[(i + k + n) % n]; sx += q.x; sy += q.y; }
+      return { x: sx / (2 * HW + 1), y: sy / (2 * HW + 1) };
+    });
+  };
+  // Canto vivo: o desfoque arredonda os cantos e a simplificação deixa 2-3 vértices ali. Onde
+  // duas retas LONGAS (>=12 mm) se encontram por um trecho curto (<=8 mm total), o trecho é
+  // trocado pelo ponto onde as retas se cruzam — se esse ponto estiver perto do trecho (<=6 mm).
+  // Retângulo vira 4 nós e o canto deixa de ser arredondado.
+  const sharpenCorners = (pts) => {
+    const n = pts.length;
+    if (n < 5) return pts;
+    const seg = (i) => ({ a: pts[i], b: pts[(i + 1) % n], len: Math.hypot(pts[(i + 1) % n].x - pts[i].x, pts[(i + 1) % n].y - pts[i].y) });
+    const LONG = 12, SHORT_TOTAL = 8, NEAR = 6;
+    const longIdx = [];
+    for (let i = 0; i < n; i++) if (seg(i).len >= LONG) longIdx.push(i);
+    if (longIdx.length < 2) return pts;
+    const replace = new Map(); // índice do 1º vértice do trecho -> { count, point }
+    const skip = new Set();
+    for (let k = 0; k < longIdx.length; k++) {
+      const ia = longIdx[k], ib = longIdx[(k + 1) % longIdx.length];
+      if (ia === ib) continue;
+      // trecho curto entre o fim do segmento ia e o início do segmento ib: vértices ia+1 .. ib
+      const count = (ib - ia - 1 + n) % n; // nº de segmentos curtos no meio
+      if (count < 1) continue;
+      let total = 0;
+      for (let j = 1; j <= count; j++) total += seg((ia + j) % n).len;
+      if (total > SHORT_TOTAL) continue;
+      const A = seg(ia), B = seg(ib);
+      const d1x = (A.b.x - A.a.x) / A.len, d1y = (A.b.y - A.a.y) / A.len;
+      const d2x = (B.b.x - B.a.x) / B.len, d2y = (B.b.y - B.a.y) / B.len;
+      const det = d1x * d2y - d1y * d2x;
+      if (Math.abs(det) < Math.sin((20 * Math.PI) / 180)) continue; // quase paralelas: não é canto
+      const t = ((B.a.x - A.a.x) * d2y - (B.a.y - A.a.y) * d2x) / det;
+      const P = { x: A.a.x + d1x * t, y: A.a.y + d1y * t };
+      const first = pts[(ia + 1) % n], last = pts[ib % n];
+      if (Math.hypot(P.x - first.x, P.y - first.y) > NEAR || Math.hypot(P.x - last.x, P.y - last.y) > NEAR) continue;
+      replace.set((ia + 1) % n, { count: count + 1, point: P });
+      for (let j = 1; j <= count; j++) skip.add((ia + 1 + j) % n);
+    }
+    if (!replace.size) return pts;
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      if (skip.has(i)) continue;
+      out.push(replace.has(i) ? replace.get(i).point : pts[i]);
+    }
+    return out.length >= 3 ? out : pts;
+  };
+  const finishLoops = (rawIn) => {
+    const cand = rawIn.map((raw) => {
+      const area = Math.abs(signedArea(raw)), per = perim(raw);
+      let circle = null;
+      if (per > 0 && (4 * Math.PI * area) / (per * per) >= 0.88 && area >= 12 && area <= 4000) {
+        const c = fitCircle(raw);
+        if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
+      }
+      return { pts: sharpenCorners(simplifyClosed(smoothKeepCorners(raw))), area, per, circle };
+    }).filter((l) => l.pts.length >= 3 && ((l.area >= 50 && l.per >= 30) || l.circle));
+    if (!cand.length) return null;
+    return cand.map((l, i) => {
+      let depth = 0;
+      cand.forEach((other, j) => { if (j !== i && inside(l.pts[0], other.pts)) depth++; });
+      return { pts: l.pts, circle: l.circle, hole: depth % 2 === 1, areaMm2: Math.abs(signedArea(l.pts)), perimeterMm: perim(l.pts) };
+    });
+  };
+  const loops = finishLoops(traceLoops(f));
+  if (!loops) return { error: "Não consegui traçar o contorno da peça." };
+
+  // ---- Silhueta: UMA linha fechada por peça (sem janela interna, sem frestas) ----
+  // A = peça detectada. Fecha (closing, raio ~12 mm) e preenche o que fica cercado (janela). Só
+  // reaproveita do fechamento o que está LIGADO a esse preenchimento (a fresta que escura da foto
+  // abriu na peça) — as concavidades reais da borda externa ficam como estão, sem arredondar.
+  // Furos redondos (parafuso) continuam, vindos do contorno detalhado.
+  let silhouette = null;
+  {
+    const rS = Math.max(3, Math.round(12 * pxPerMm));
+    const Af = new Float32Array(N);
+    for (let i = 0; i < N; i++) Af[i] = keep[i];
+    const d1 = boxSum(Af, w, h, rS);
+    for (let i = 0; i < N; i++) d1[i] = d1[i] > 0 ? 1 : 0;
+    const e1 = boxSum(d1, w, h, rS);
+    const fullS = (2 * rS + 1) * (2 * rS + 1) - 0.5;
+    const C = new Uint8Array(N);
+    for (let i = 0; i < N; i++) C[i] = keep[i] || e1[i] >= fullS ? 1 : 0;
+    // fundo alcançável a partir da borda da imagem
+    const outside = new Uint8Array(N);
+    let sp = 0;
+    const pushOut = (i) => { if (!C[i] && !outside[i]) { outside[i] = 1; stack[sp++] = i; } };
+    for (let x = 0; x < w; x++) { pushOut(x); pushOut((h - 1) * w + x); }
+    for (let y = 0; y < h; y++) { pushOut(y * w); pushOut(y * w + w - 1); }
+    while (sp) {
+      const p = stack[--sp], x = p % w, y = (p - x) / w;
+      if (x > 0) pushOut(p - 1);
+      if (x < w - 1) pushOut(p + 1);
+      if (y > 0) pushOut(p - w);
+      if (y < h - 1) pushOut(p + w);
+    }
+    const extra = new Uint8Array(N); // pixels a juntar à peça
+    const isW = (i) => !C[i] && !outside[i];
+    for (let i = 0; i < N; i++) if (isW(i)) extra[i] = 1;
+    const seen = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      if (!C[i] || keep[i] || seen[i]) continue;
+      const comp = [i];
+      seen[i] = 1;
+      let touchesW = false;
+      for (let qi = 0; qi < comp.length; qi++) {
+        const p = comp[qi], x = p % w, y = (p - x) / w;
+        const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+        for (const n of nb) {
+          if (n < 0) continue;
+          if (isW(n)) touchesW = true;
+          else if (C[n] && !keep[n] && !seen[n]) { seen[n] = 1; comp.push(n); }
+        }
+      }
+      if (touchesW) for (const p of comp) extra[p] = 1;
+    }
+    const fS = Float32Array.from(f);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (extra[i] && !excl[i]) { const k = (y + 1) * W + x + 1; if (fS[k] < 1) fS[k] = 1; }
+      }
+    }
+    const loopsS = finishLoops(traceLoops(fS));
+    if (loopsS) silhouette = [...loopsS.filter((l) => !l.hole), ...loops.filter((l) => l.hole && l.circle)];
+  }
+
   const outer = loops.filter((l) => !l.hole);
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
   for (const l of outer) for (const p of l.pts) { bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y); bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y); }
   return {
     loops,
+    silhouette,
     bbox: { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 },
     areaMm2: outer.reduce((s, l) => s + l.areaMm2, 0) - loops.filter((l) => l.hole).reduce((s, l) => s + l.areaMm2, 0),
     perimeterMm: loops.reduce((s, l) => s + l.perimeterMm, 0),
     threshold: Tseed,
-    dbg: { T, Tseed, softShare: +softShare.toFixed(2), pieceLevel: Math.round(pieceLevel), bgGlobal: Math.round(bgGlobal), delta: Math.round(delta), components: nl, kept: keepLabel.reduce((a, b) => a + b, 0), segments: segA.length, rawLoops: rawLoops.length },
+    internals: opts.keepInternals ? { gray, g0, fg, labels, keepLabel, excl, w, h } : null,
+    dbg: { T, Tseed, softShare: +softShare.toFixed(2), pieceLevel: Math.round(pieceLevel), bgGlobal: Math.round(bgGlobal), delta: Math.round(delta), components: nl, kept: keepLabel.reduce((a, b) => a + b, 0), loops: loops.length },
   };
+}
+
+// Douglas-Peucker em polilinha aberta (pontos em mm)
+function dpSimplify(pts, tol) {
+  const n = pts.length;
+  if (n < 3) return pts;
+  const keepIdx = new Uint8Array(n);
+  keepIdx[0] = 1; keepIdx[n - 1] = 1;
+  const st = [[0, n - 1]];
+  while (st.length) {
+    const [a, b] = st.pop();
+    if (b <= a + 1) continue;
+    const pa = pts[a], pb = pts[b];
+    const dx = pb.x - pa.x, dy = pb.y - pa.y, len = Math.hypot(dx, dy) || 1e-9;
+    let md = -1, mi = -1;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs((pts[i].x - pa.x) * dy - (pts[i].y - pa.y) * dx) / len;
+      if (d > md) { md = d; mi = i; }
+    }
+    if (md > tol) { keepIdx[mi] = 1; st.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keepIdx[i]);
+}
+
+// máx (isMax) ou mín em janela (2r+1) separável, só dentro da caixa [x0..x1] x [y0..y1]
+function slideMinMax(src, w, h, r, isMax, x0, y0, x1, y1) {
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      let v = isMax ? -Infinity : Infinity;
+      for (let k = -r; k <= r; k++) {
+        const xx = x + k;
+        if (xx < 0 || xx >= w) continue;
+        const a = src[y * w + xx];
+        if (isMax ? a > v : a < v) v = a;
+      }
+      tmp[y * w + x] = v;
+    }
+  }
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      let v = isMax ? -Infinity : Infinity;
+      for (let k = -r; k <= r; k++) {
+        const yy = y + k;
+        if (yy < 0 || yy >= h) continue;
+        const a = tmp[yy * w + x];
+        if (isMax ? a > v : a < v) v = a;
+      }
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+
+// Linhas de caneta (verde/azul) desenhadas sobre a peça — o desenhista as traça numa camada
+// separada. Acha tinta escura, de tom frio, DENTRO da peça (máscara fechada por closing), afina
+// até 1px (esqueleto de Zhang-Suen) e segue os caminhos mais longos de cada componente,
+// descartando traços curtos (letras, números, riscos). Devolve [{ pts: [{x,y} em mm] }].
+function extractInkLines(data, w, h, pxPerMm, I) {
+  const N = w * h;
+  const { gray, g0, fg, labels, keepLabel, excl } = I;
+  const keepF = new Float32Array(N);
+  for (let i = 0; i < N; i++) if (labels[i] && keepLabel[labels[i]]) keepF[i] = 1;
+  // peça "fechada": o closing cobre traços de até ~5 mm que furam a máscara da peça
+  const rC = Math.max(2, Math.round(2.5 * pxPerMm));
+  const dil = boxSum(keepF, w, h, rC);
+  for (let i = 0; i < N; i++) dil[i] = dil[i] > 0 ? 1 : 0;
+  const ero = boxSum(dil, w, h, rC);
+  const full = (2 * rC + 1) * (2 * rC + 1) - 0.5;
+  const closedF = new Float32Array(N);
+  for (let i = 0; i < N; i++) closedF[i] = ero[i] >= full ? 1 : 0;
+  const rE = Math.max(3, Math.round(3 * pxPerMm)); // ignora ~3 mm junto da borda da peça
+  const inner = boxSum(closedF, w, h, rE);
+  const fullE = (2 * rE + 1) * (2 * rE + 1) - 0.5;
+  // brilho local do papel (média dos pixels claros da peça, raio ~8 mm)
+  const gwp = new Float32Array(N), fgF = new Float32Array(N);
+  for (let i = 0; i < N; i++) if (fg[i]) { gwp[i] = gray[i]; fgF[i] = 1; }
+  const Rp = Math.max(6, Math.round(8 * pxPerMm));
+  const numP = boxSum(gwp, w, h, Rp), denP = boxSum(fgF, w, h, Rp);
+
+  // linha fina escura = black top-hat do canal máximo bruto (fechamento 7x7 menos a imagem):
+  // pega traço de 1px que o suavizado apagaria, sem depender do brilho do papel
+  let kx0 = w, ky0 = h, kx1 = 0, ky1 = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (keepF[y * w + x]) { if (x < kx0) kx0 = x; if (x > kx1) kx1 = x; if (y < ky0) ky0 = y; if (y > ky1) ky1 = y; }
+  const g0f = new Float32Array(N);
+  for (let i = 0; i < N; i++) g0f[i] = g0[i];
+  const rc = 3;
+  const bx0c = Math.max(rc, kx0 - rc), by0c = Math.max(rc, ky0 - rc), bx1c = Math.min(w - 1 - rc, kx1 + rc), by1c = Math.min(h - 1 - rc, ky1 + rc);
+  const dilG = slideMinMax(g0f, w, h, rc, true, bx0c, by0c, bx1c, by1c);
+  const clos = slideMinMax(dilG, w, h, rc, false, bx0c + rc, by0c + rc, bx1c - rc, by1c - rc);
+  const weak = new Uint8Array(N), strong = [];
+  const mask = new Uint8Array(N);
+  let bx0 = w, by0 = h, bx1 = 0, by1 = 0, count = 0;
+  for (let y = 2; y < h - 2; y++) {
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      if (excl[i] || inner[i] < fullE || denP[i] < 30) continue;
+      const bh = clos[i] - g0f[i];
+      if (bh < 15) continue;                                  // não é traço fino escuro
+      if (g0f[i] >= numP[i] / denP[i] - 20) continue;       // e tem que ser mais escuro que o papel ao redor
+      const j = i * 4, r = data[j], g = data[j + 1], b = data[j + 2];
+      if (r > g + 20 && r > b + 20) continue;               // tinta vermelha: texto, não linha
+      if (b >= g + 15 && b >= r + 25) continue;             // azul forte: escrita à mão
+      if (g >= r + 35 && g >= b + 35 && g - Math.min(r, b) >= 60) continue; // fita adesiva
+      weak[i] = 1;
+      if (bh >= 28) strong.push(i);
+    }
+  }
+  {
+    const stk = [];
+    for (const i of strong) { mask[i] = 1; stk.push(i); }
+    while (stk.length) {
+      const p = stk.pop(), x = p % w, y = (p - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const n = yy * w + xx;
+          if (weak[n] && !mask[n]) { mask[n] = 1; stk.push(n); }
+        }
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!mask[y * w + x]) continue;
+        count++;
+        if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y;
+      }
+    }
+  }
+  if (count < 20) return [];
+  {
+    const tmpM = new Uint8Array(N);
+    for (let y = Math.max(1, by0 - 1); y <= Math.min(h - 2, by1 + 1); y++) {
+      for (let x = Math.max(1, bx0 - 1); x <= Math.min(w - 2, bx1 + 1); x++) {
+        const i = y * w + x;
+        if (mask[i] || mask[i - 1] || mask[i + 1] || mask[i - w] || mask[i + w]) tmpM[i] = 1;
+      }
+    }
+    mask.set(tmpM);
+    bx0 = Math.max(1, bx0 - 1); by0 = Math.max(1, by0 - 1); bx1 = Math.min(w - 2, bx1 + 1); by1 = Math.min(h - 2, by1 + 1);
+  }
+
+  // afinamento (Zhang-Suen)
+  const del = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      del.length = 0;
+      for (let y = Math.max(1, by0 - 1); y <= Math.min(h - 2, by1 + 1); y++) {
+        for (let x = Math.max(1, bx0 - 1); x <= Math.min(w - 2, bx1 + 1); x++) {
+          const i = y * w + x;
+          if (!mask[i]) continue;
+          const p2 = mask[i - w], p3 = mask[i - w + 1], p4 = mask[i + 1], p5 = mask[i + w + 1];
+          const p6 = mask[i + w], p7 = mask[i + w - 1], p8 = mask[i - 1], p9 = mask[i - w - 1];
+          const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9;
+          if (B < 2 || B > 6) continue;
+          const A = (!p2 && p3) + (!p3 && p4) + (!p4 && p5) + (!p5 && p6) + (!p6 && p7) + (!p7 && p8) + (!p8 && p9) + (!p9 && p2);
+          if (A !== 1) continue;
+          if (pass === 0) { if (p2 * p4 * p6 || p4 * p6 * p8) continue; }
+          else if (p2 * p4 * p8 || p2 * p6 * p8) continue;
+          del.push(i);
+        }
+      }
+      for (const i of del) mask[i] = 0;
+      if (del.length) changed = true;
+    }
+  }
+
+  // caminhos: maior caminho de cada componente do esqueleto, retirado e repetido nas sobras
+  const skel = [];
+  for (let y = by0; y <= by1; y++) for (let x = bx0; x <= bx1; x++) if (mask[y * w + x]) skel.push(y * w + x);
+  const alive = mask; // reaproveita: 1 = pixel de esqueleto ainda não usado
+  const stamp = new Int32Array(N), par = new Int32Array(N);
+  let stp = 0;
+  const NB = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+  const bfs = (start) => {
+    stp++;
+    const q = [start];
+    stamp[start] = stp; par[start] = -1;
+    for (let qi = 0; qi < q.length; qi++) {
+      const p = q[qi], x = p % w, y = (p - x) / w;
+      for (const [dx, dy] of NB) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const n = yy * w + xx;
+        if (alive[n] && stamp[n] !== stp) { stamp[n] = stp; par[n] = p; q.push(n); }
+      }
+    }
+    return q;
+  };
+  const minLenMm = 60;
+  const lines = [];
+  for (const s0 of skel) {
+    if (!alive[s0]) continue;
+    const q1 = bfs(s0);
+    const A = q1[q1.length - 1];
+    const q2 = bfs(A);
+    const Bn = q2[q2.length - 1];
+    const path = [];
+    for (let p = Bn; p !== -1; p = par[p]) path.push(p);
+    let len = 0;
+    for (let k = 1; k < path.length; k++) {
+      const a = path[k - 1], b = path[k];
+      len += Math.hypot((a % w) - (b % w), Math.floor(a / w) - Math.floor(b / w));
+    }
+    if (len / pxPerMm < minLenMm) { for (const p of q2) alive[p] = 0; continue; } // componente só tem traços curtos
+    for (const p of path) alive[p] = 0;
+    let pts = path.map((p) => ({ x: (p % w) / pxPerMm, y: Math.floor(p / w) / pxPerMm }));
+    // suaviza a escada do esqueleto (média de 5 pontos, extremos fixos) e simplifica
+    if (pts.length > 8) {
+      pts = pts.map((p, i) => {
+        if (i < 2 || i > pts.length - 3) return p;
+        let sx = 0, sy = 0;
+        for (let k = -2; k <= 2; k++) { sx += pts[i + k].x; sy += pts[i + k].y; }
+        return { x: sx / 5, y: sy / 5 };
+      });
+    }
+    pts = dpSimplify(pts, 0.3);
+    if (pts.length >= 2) lines.push({ pts });
+  }
+
+  // liga fragmentos alinhados (vão de até ~12 mm na direção da linha) — a tinta fraca quebra a linha
+  const lenOf = (pts) => pts.reduce((a, p, i) => a + (i ? Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y) : 0), 0);
+  const tangentAt = (pts, atEnd) => {
+    const n = pts.length;
+    const a = atEnd ? pts[n - 1] : pts[0];
+    let b = atEnd ? pts[n - 2] : pts[1];
+    for (let k = 2; k < n; k++) {
+      const c = atEnd ? pts[n - k] : pts[k - 1];
+      if (Math.hypot(a.x - c.x, a.y - c.y) >= 6) { b = c; break; }
+      b = c;
+    }
+    const dx = a.x - b.x, dy = a.y - b.y, L = Math.hypot(dx, dy) || 1;
+    return { x: dx / L, y: dy / L };
+  };
+  const GAP = 30, MAXANG = (30 * Math.PI) / 180;
+  let merged = true;
+  while (merged) {
+    merged = false;
+    outer: for (let i = 0; i < lines.length; i++) {
+      for (let j = i + 1; j < lines.length; j++) {
+        for (const ei of [false, true]) {
+          for (const ej of [false, true]) {
+            const A = lines[i].pts, B = lines[j].pts;
+            const pa = ei ? A[A.length - 1] : A[0], pb = ej ? B[B.length - 1] : B[0];
+            const d = Math.hypot(pa.x - pb.x, pa.y - pb.y);
+            if (d > GAP) continue;
+            const ta = tangentAt(A, ei), tb = tangentAt(B, ej);
+            const cx = d > 0.5 ? (pb.x - pa.x) / d : ta.x, cy = d > 0.5 ? (pb.y - pa.y) / d : ta.y;
+            const angA = Math.acos(Math.max(-1, Math.min(1, ta.x * cx + ta.y * cy)));
+            const angB = Math.acos(Math.max(-1, Math.min(1, -(tb.x * cx + tb.y * cy))));
+            const angAB = Math.acos(Math.max(-1, Math.min(1, -(ta.x * tb.x + ta.y * tb.y))));
+            if (angA > MAXANG || angB > MAXANG || angAB > MAXANG * 1.5) continue;
+            const first = ei ? A : [...A].reverse();
+            const second = ej ? [...B].reverse() : B;
+            lines[i] = { pts: dpSimplify([...first, ...second], 0.3) };
+            lines.splice(j, 1);
+            merged = true;
+            break outer;
+          }
+        }
+      }
+    }
+  }
+
+  // tortuosidade: linha de caneta é reta/curva suave; escrita à mão é cheia de voltas
+  const out = [];
+  const rejected = [];
+  for (const ln of lines) {
+    const L = lenOf(ln.pts);
+    const chord = Math.hypot(ln.pts[0].x - ln.pts[ln.pts.length - 1].x, ln.pts[0].y - ln.pts[ln.pts.length - 1].y) || 1e-9;
+    ln.lengthMm = L; ln.tort = L / chord; ln.vertPer10 = (ln.pts.length / L) * 10;
+    if (L >= minLenMm && ln.tort <= 1.45 && ln.vertPer10 <= 3) out.push(ln);
+    else rejected.push({ x: Math.round(ln.pts[0].x), y: Math.round(ln.pts[0].y), len: Math.round(L), tort: +ln.tort.toFixed(2), v10: +ln.vertPer10.toFixed(1) });
+  }
+  out.rejected = rejected;
+  return out;
 }
 
 // DXF (R12, ASCII, polylines fechadas em mm, Y pra cima). Contorno externo na camada
@@ -1374,17 +1825,27 @@ function vectorToDXF(vec, matHeightMm) {
   add(0, "TABLE"); add(2, "LTYPE"); add(70, 1);
   add(0, "LTYPE"); add(2, "CONTINUOUS"); add(70, 0); add(3, "Solid line"); add(72, 65); add(73, 0); add(40, "0.0");
   add(0, "ENDTAB");
-  add(0, "TABLE"); add(2, "LAYER"); add(70, 2);
+  add(0, "TABLE"); add(2, "LAYER"); add(70, 3);
   add(0, "LAYER"); add(2, "CONTORNO"); add(70, 0); add(62, 7); add(6, "CONTINUOUS");
   add(0, "LAYER"); add(2, "FURO"); add(70, 0); add(62, 1); add(6, "CONTINUOUS");
+  add(0, "LAYER"); add(2, "LINHAS"); add(70, 0); add(62, 2); add(6, "CONTINUOUS");
   add(0, "ENDTAB");
   add(0, "ENDSEC");
   add(0, "SECTION"); add(2, "ENTITIES");
   for (const l of vec.loops) {
     const layer = l.hole ? "FURO" : "CONTORNO";
+    if (l.circle) {
+      add(0, "CIRCLE"); add(8, layer); add(10, l.circle.cx.toFixed(3)); add(20, (matHeightMm - l.circle.cy).toFixed(3)); add(30, "0.0"); add(40, l.circle.r.toFixed(3));
+      continue;
+    }
     add(0, "POLYLINE"); add(8, layer); add(66, 1); add(70, 1);
     for (const p of l.pts) { add(0, "VERTEX"); add(8, layer); add(10, p.x.toFixed(3)); add(20, (matHeightMm - p.y).toFixed(3)); add(30, "0.0"); }
     add(0, "SEQEND"); add(8, layer);
+  }
+  for (const ln of (vec.lines || [])) {
+    add(0, "POLYLINE"); add(8, "LINHAS"); add(66, 1); add(70, 0);
+    for (const p of ln.pts) { add(0, "VERTEX"); add(8, "LINHAS"); add(10, p.x.toFixed(3)); add(20, (matHeightMm - p.y).toFixed(3)); add(30, "0.0"); }
+    add(0, "SEQEND"); add(8, "LINHAS");
   }
   add(0, "ENDSEC"); add(0, "EOF");
   return L.join("\n") + "\n";
@@ -1392,9 +1853,17 @@ function vectorToDXF(vec, matHeightMm) {
 
 // SVG em mm (mesma orientação da imagem, Y pra baixo).
 function vectorToSVG(vec, matWidthMm, matHeightMm) {
-  const path = (l) => "M" + l.pts.map((p) => p.x.toFixed(3) + " " + p.y.toFixed(3)).join(" L") + " Z";
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${matWidthMm.toFixed(1)}mm" height="${matHeightMm.toFixed(1)}mm" viewBox="0 0 ${matWidthMm.toFixed(3)} ${matHeightMm.toFixed(3)}">\n` +
-    vec.loops.map((l) => `  <path d="${path(l)}" fill="none" stroke="${l.hole ? "#ff0000" : "#000000"}" stroke-width="0.25"/>`).join("\n") + "\n</svg>\n";
+  const path = (pts, close) => "M" + pts.map((p) => p.x.toFixed(3) + " " + p.y.toFixed(3)).join(" L") + (close ? " Z" : "");
+  const out = [];
+  out.push('<?xml version="1.0" encoding="UTF-8"?>');
+  out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + matWidthMm.toFixed(1) + 'mm" height="' + matHeightMm.toFixed(1) + 'mm" viewBox="0 0 ' + matWidthMm.toFixed(3) + " " + matHeightMm.toFixed(3) + '">');
+  for (const l of vec.loops) {
+    if (l.circle) out.push('  <circle cx="' + l.circle.cx.toFixed(3) + '" cy="' + l.circle.cy.toFixed(3) + '" r="' + l.circle.r.toFixed(3) + '" fill="none" stroke="#ff0000" stroke-width="0.25"/>');
+    else out.push('  <path d="' + path(l.pts, true) + '" fill="none" stroke="' + (l.hole ? "#ff0000" : "#000000") + '" stroke-width="0.25"/>');
+  }
+  for (const ln of (vec.lines || [])) out.push('  <path d="' + path(ln.pts, false) + '" fill="none" stroke="#c8a000" stroke-width="0.25"/>');
+  out.push("</svg>");
+  return out.join("\n") + "\n";
 }
 /* VECTOR-END */
 
@@ -1931,26 +2400,34 @@ btnRetry.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * Vetorização automática do contorno das peças (DXF / SVG em mm reais)
+ * Vetorização automática das peças (DXF / SVG em mm reais)
+ * Padrão: UMA linha fechada por peça (silhueta). Janela interna e linhas de caneta são opções.
  * ------------------------------------------------------------------ */
 
 const vectorToggle = el("vectorToggle");
 const vectorInfo = el("vectorInfo");
 const vectorActions = el("vectorActions");
 const vectorShow = el("vectorShow");
+const vectorWindows = el("vectorWindows");
+const vectorInk = el("vectorInk");
 const vectorOverlay = el("vectorOverlay");
 const btnDxf = el("btnDxf");
 const btnSvg = el("btnSvg");
-const VECTOR_KEY = "moldeflat_vector_auto";
 
-try {
-  const sv = localStorage.getItem(VECTOR_KEY);
-  if (sv !== null) vectorToggle.checked = sv === "1";
-} catch (e) { /* padrão: ligado */ }
-vectorToggle.addEventListener("change", () => {
-  try { localStorage.setItem(VECTOR_KEY, vectorToggle.checked ? "1" : "0"); } catch (e) { /* ok */ }
-  if (currentResult) currentResult.vectorPromise = runVectorization(currentResult);
-});
+function bindFlag(cb, key, onChange) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v !== null) cb.checked = v === "1";
+  } catch (e) { /* usa o padrão do HTML */ }
+  cb.addEventListener("change", () => {
+    try { localStorage.setItem(key, cb.checked ? "1" : "0"); } catch (e) { /* ok */ }
+    onChange();
+  });
+}
+const rerunVector = () => { if (currentResult) currentResult.vectorPromise = runVectorization(currentResult); };
+bindFlag(vectorToggle, "moldeflat_vector_auto", rerunVector);
+bindFlag(vectorInk, "moldeflat_vector_ink", rerunVector);
+bindFlag(vectorWindows, "moldeflat_vector_windows", () => { if (currentResult && currentResult.vectorRaw) buildVectorView(currentResult); });
 vectorShow.addEventListener("change", () => vectorOverlay.classList.toggle("hidden", !vectorShow.checked));
 
 function clearVectorUI() {
@@ -1959,7 +2436,7 @@ function clearVectorUI() {
   vectorOverlay.getContext("2d").clearRect(0, 0, vectorOverlay.width, vectorOverlay.height);
 }
 
-function drawVectorOverlay(vec, pxPerMm) {
+function drawVectorOverlay(view, pxPerMm) {
   const W = resultCanvas.width, H = resultCanvas.height;
   vectorOverlay.width = W;
   vectorOverlay.height = H;
@@ -1967,11 +2444,22 @@ function drawVectorOverlay(vec, pxPerMm) {
   ctx.clearRect(0, 0, W, H);
   ctx.lineWidth = Math.max(2, W / 450);
   ctx.lineJoin = "round";
-  for (const l of vec.loops) {
+  const X = (v) => v * pxPerMm + 0.5;
+  for (const l of view.loops) {
     ctx.strokeStyle = l.hole ? "#ff3b3b" : "#18ff6d";
     ctx.beginPath();
-    l.pts.forEach((p, i) => (i ? ctx.lineTo(p.x * pxPerMm + 0.5, p.y * pxPerMm + 0.5) : ctx.moveTo(p.x * pxPerMm + 0.5, p.y * pxPerMm + 0.5)));
-    ctx.closePath();
+    if (l.circle) {
+      ctx.arc(X(l.circle.cx), X(l.circle.cy), l.circle.r * pxPerMm, 0, Math.PI * 2);
+    } else {
+      l.pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), X(p.y)) : ctx.moveTo(X(p.x), X(p.y))));
+      ctx.closePath();
+    }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#ffb300";
+  for (const ln of view.lines) {
+    ctx.beginPath();
+    ln.pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), X(p.y)) : ctx.moveTo(X(p.x), X(p.y))));
     ctx.stroke();
   }
   vectorOverlay.classList.toggle("hidden", !vectorShow.checked);
@@ -1980,18 +2468,21 @@ function drawVectorOverlay(vec, pxPerMm) {
 async function runVectorization(holder) {
   const isCurrent = () => currentResult === holder;
   holder.vector = null;
+  holder.vectorRaw = null;
   if (isCurrent()) clearVectorUI();
   if (!vectorToggle.checked) {
     if (isCurrent()) vectorInfo.textContent = "Vetorização automática desligada.";
     return;
   }
-  if (isCurrent()) vectorInfo.textContent = "Vetorizando o contorno das peças…";
+  if (isCurrent()) vectorInfo.textContent = "Vetorizando as peças…";
   await nextFrame();
   const { canvas, outW, outH, pxPerMm, profile } = holder.geo;
   let vec;
   try {
     const img = canvas.getContext("2d").getImageData(0, 0, outW, outH);
-    vec = vectorizePiece(img.data, outW, outH, pxPerMm, profile);
+    vec = vectorizePiece(img.data, outW, outH, pxPerMm, profile, { keepInternals: vectorInk.checked });
+    if (!vec.error && vectorInk.checked && vec.internals) vec.lines = extractInkLines(img.data, outW, outH, pxPerMm, vec.internals);
+    vec.internals = null;
   } catch (e) {
     vec = { error: "Erro ao vetorizar: " + e.message };
   }
@@ -1999,21 +2490,35 @@ async function runVectorization(holder) {
     if (isCurrent()) vectorInfo.textContent = vec.error;
     return;
   }
-  vec.dxf = vectorToDXF(vec, outH / pxPerMm);
-  vec.svg = vectorToSVG(vec, outW / pxPerMm, outH / pxPerMm);
-  holder.vector = vec;
-  if (!isCurrent()) return;
-  drawVectorOverlay(vec, pxPerMm);
+  holder.vectorRaw = vec;
+  buildVectorView(holder);
+}
+
+// Monta o que será exportado a partir do resultado bruto e das opções marcadas.
+function buildVectorView(holder) {
+  const raw = holder.vectorRaw;
+  const { outW, outH, pxPerMm } = holder.geo;
+  let loops;
+  if (vectorWindows.checked) loops = raw.loops.filter((l) => !l.hole || l.circle || l.areaMm2 >= 300);
+  else loops = raw.silhouette || raw.loops.filter((l) => !l.hole || l.circle);
+  const view = { loops, lines: vectorInk.checked ? (raw.lines || []) : [] };
+  view.dxf = vectorToDXF(view, outH / pxPerMm);
+  view.svg = vectorToSVG(view, outW / pxPerMm, outH / pxPerMm);
+  holder.vector = view;
+  if (currentResult !== holder) return;
+  drawVectorOverlay(view, pxPerMm);
   const fmt = (v) => v.toFixed(1).replace(".", ",");
-  const outer = vec.loops.filter((l) => !l.hole);
-  const holes = vec.loops.length - outer.length;
+  const outer = loops.filter((l) => !l.hole);
+  const holes = loops.length - outer.length;
+  const nodes = loops.reduce((a, l) => a + (l.circle ? 1 : l.pts.length), 0) + view.lines.reduce((a, l) => a + l.pts.length, 0);
   const dims = outer.slice(0, 8).map((l, i) => {
     const xs = l.pts.map((p) => p.x), ys = l.pts.map((p) => p.y);
     return "Peça " + (i + 1) + ": " + fmt(Math.max(...xs) - Math.min(...xs)) + " x " + fmt(Math.max(...ys) - Math.min(...ys)) + " mm";
   });
   vectorInfo.textContent =
-    "Contorno vetorizado: " + outer.length + " peça(s), " + holes + " furo(s).\n" + dims.join("\n") +
-    "\nVerde = contorno, vermelho = furos. Confira o desenho sobre a imagem antes de mandar cortar.";
+    outer.length + " peça(s), uma linha fechada cada" + (holes ? ", " + holes + " furo(s)" : "") +
+    (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
+    dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar.";
   vectorActions.classList.remove("hidden");
 }
 
