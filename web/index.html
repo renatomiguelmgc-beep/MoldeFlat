@@ -128,7 +128,20 @@
     </div>
     <div id="calibWarning" class="calib-warning hidden"></div>
     <div class="result-wrap">
-      <canvas id="resultCanvas"></canvas>
+      <div class="result-stack">
+        <canvas id="resultCanvas"></canvas>
+        <canvas id="vectorOverlay" class="vector-overlay hidden"></canvas>
+      </div>
+    </div>
+
+    <div class="vector-box">
+      <label class="vector-toggle"><input type="checkbox" id="vectorToggle" checked /> Vetorizar o contorno das peças automaticamente (DXF / SVG)</label>
+      <p id="vectorInfo" class="hint vector-info"></p>
+      <div id="vectorActions" class="result-actions hidden">
+        <button id="btnDxf" class="btn btn-primary">Baixar DXF</button>
+        <button id="btnSvg" class="btn btn-secondary">Baixar SVG</button>
+        <label class="vector-toggle"><input type="checkbox" id="vectorShow" checked /> Mostrar contorno na imagem</label>
+      </div>
     </div>
     <p id="resultInfo" class="hint"></p>
     <div class="result-actions">
@@ -157,6 +170,7 @@
     <div class="result-actions">
       <button id="btnBatchShare" class="btn btn-primary">Compartilhar todas</button>
       <button id="btnBatchZip" class="btn btn-secondary">Baixar todas (.zip)</button>
+      <button id="btnBatchShareZip" class="btn btn-secondary">Compartilhar .zip</button>
       <button id="btnBatchMore" class="btn btn-secondary">Fotografar outro molde</button>
       <button id="btnBatchClear" class="btn btn-ghost">Apagar tudo</button>
     </div>
@@ -166,15 +180,15 @@
 
 <footer class="footer">
   <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
-  <p>versão 2026-10-09.5</p>
+  <p>versão 2026-10-09.6</p>
 </footer>
 
 </div>
 
-<script src="lib/cv.js?v=2026-10-09.5"></script>
-<script src="lib/aruco.js?v=2026-10-09.5"></script>
-<script src="lib/ribbon.js?v=2026-10-09.5"></script>
-<script src="app.js?v=2026-10-09.5"></script>
-<script src="auth.js?v=2026-10-09.5"></script>
+<script src="lib/cv.js?v=2026-10-09.6"></script>
+<script src="lib/aruco.js?v=2026-10-09.6"></script>
+<script src="lib/ribbon.js?v=2026-10-09.6"></script>
+<script src="app.js?v=2026-10-09.6"></script>
+<script src="auth.js?v=2026-10-09.6"></script>
 </body>
 </html>

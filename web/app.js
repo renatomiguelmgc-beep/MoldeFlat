@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.5";
+const APP_VERSION = "2026-10-09.6";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -782,7 +782,11 @@ async function processImage() {
   stepResult.classList.remove("hidden");
   stepResult.scrollIntoView({ behavior: "smooth", block: "start" });
   setupDownloadShare(finalCanvas);
-  currentResult = { canvas: finalCanvas, profileName: currentProfile.nome, errPct: calibration.maxAbsErrorPct };
+  currentResult = {
+    canvas: finalCanvas, profileName: currentProfile.nome, errPct: calibration.maxAbsErrorPct,
+    geo: { canvas: finalCanvas, outW, outH, pxPerMm, profile: currentProfile },
+  };
+  currentResult.vectorPromise = runVectorization(currentResult);
   btnMoreYes.disabled = false;
   btnMoreNo.disabled = false;
 }
@@ -909,6 +913,490 @@ function refineFoundMarkers(found, imageData) {
 /* REFINE-END */
 
 const mmStr = (v) => v.toFixed(2).replace(".", ",") + " mm";
+
+/* VECTOR-BEGIN */
+// Vetorização do contorno das peças na imagem corrigida (1 px = 1/pxPerMm mm; o pixel de
+// índice i corresponde à coordenada i/pxPerMm mm, origem no canto do tapete).
+// Passos: valor (canal máximo) -> máscara (borda do tapete e marcadores) -> sementes da peça
+// (parte bem clara) -> MODELO DE FUNDO local (tapete + reflexo, estimado só onde não é peça)
+// -> peça = o que fica bem acima do fundo (+ fita adesiva verde, por cor) -> componentes
+// -> contorno sub-pixel por marching squares (contorno externo e furos) -> refino local da
+// borda -> simplificação Douglas-Peucker em mm.
+
+// soma em janela quadrada (2r+1), bordas truncadas, O(N)
+function boxSum(src, w, h, r) {
+  const N = w * h;
+  const tmp = new Float32Array(N), out = new Float32Array(N);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let s = 0;
+    for (let x = 0; x <= Math.min(r, w - 1); x++) s += src[row + x];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = s;
+      const add = x + r + 1, rem = x - r;
+      if (add < w) s += src[row + add];
+      if (rem >= 0) s -= src[row + rem];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = 0; y <= Math.min(r, h - 1); y++) s += tmp[y * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = s;
+      const add = y + r + 1, rem = y - r;
+      if (add < h) s += tmp[add * w + x];
+      if (rem >= 0) s -= tmp[rem * w + x];
+    }
+  }
+  return out;
+}
+
+// Otsu em hist[lo..255]; devolve { t, ratio, gap, lowShare } (ratio = variância entre classes / total)
+function otsuRange(hist, lo) {
+  let n = 0, sum = 0;
+  for (let t = lo; t < 256; t++) { n += hist[t]; sum += t * hist[t]; }
+  if (n < 50) return null;
+  const mean = sum / n;
+  let varT = 0;
+  for (let t = lo; t < 256; t++) varT += hist[t] * (t - mean) * (t - mean);
+  varT /= n;
+  let wB = 0, sumB = 0, best = -1, bt = lo, bGap = 0, bLow = 0;
+  for (let t = lo; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    const wF = n - wB;
+    if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const between = (wB / n) * (wF / n) * (mB - mF) * (mB - mF);
+    if (between > best) { best = between; bt = t + 0.5; bGap = mF - mB; bLow = wB / n; }
+  }
+  return { t: bt, ratio: varT > 0 ? best / varT : 0, gap: bGap, lowShare: bLow };
+}
+
+function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
+  opts = opts || {};
+  const N = w * h;
+  const g0 = new Uint8Array(N);
+  const tape = new Uint8Array(N); // verde saturado = fita adesiva (faz parte da peça: emenda)
+  // valor = canal MÁXIMO (não a média): tinta colorida e fita contam como peça
+  for (let i = 0, j = 0; i < N; i++, j += 4) {
+    const r = data[j], g = data[j + 1], b = data[j + 2];
+    g0[i] = Math.max(r, g, b);
+    if (g >= r + 35 && g >= b + 35 && g - Math.min(r, b) >= 60) tape[i] = 1;
+  }
+  // suavização 3x3 (tira ruído de JPEG/textura sem mexer na posição da borda)
+  const tmp = new Float32Array(N);
+  const gray = new Float32Array(N);
+  for (let y = 0; y < h; y++) {
+    const r = y * w;
+    for (let x = 0; x < w; x++) {
+      const xm = x > 0 ? x - 1 : x, xp = x < w - 1 ? x + 1 : x;
+      tmp[r + x] = (g0[r + xm] + g0[r + x] + g0[r + xp]) / 3;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    const ym = (y > 0 ? y - 1 : y) * w, yc = y * w, yp = (y < h - 1 ? y + 1 : y) * w;
+    for (let x = 0; x < w; x++) gray[yc + x] = (tmp[ym + x] + tmp[yc + x] + tmp[yp + x]) / 3;
+  }
+
+  // máscara: faixa da borda (fita de referência) e marcadores com margem
+  const excl = new Uint8Array(N);
+  const sc = profile.marker_size_mm / 100;
+  const edgePx = opts.noMask ? 0 : Math.ceil(30 * sc * pxPerMm);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x < edgePx || y < edgePx || x >= w - edgePx || y >= h - edgePx) excl[y * w + x] = 1;
+    }
+  }
+  for (const m of (opts.noMask ? [] : profile.markers)) {
+    const c = markerRealXY(m, profile);
+    const half = (profile.marker_size_mm / 2 + 6 * sc) * pxPerMm;
+    const x0 = Math.max(0, Math.floor(c.x * pxPerMm - half)), x1 = Math.min(w - 1, Math.ceil(c.x * pxPerMm + half));
+    const y0 = Math.max(0, Math.floor(c.y * pxPerMm - half)), y1 = Math.min(h - 1, Math.ceil(c.y * pxPerMm + half));
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) excl[y * w + x] = 1;
+  }
+
+  // 1º nível (Otsu) e, se houver reflexo claro no tapete, 2º nível pra separar a peça dele
+  const hist = new Float64Array(256);
+  let total = 0;
+  for (let i = 0; i < N; i++) {
+    if (excl[i]) continue;
+    hist[Math.min(255, gray[i] | 0)]++;
+    total++;
+  }
+  if (total < 1000) return { error: "Imagem pequena demais para vetorizar." };
+  const o1 = otsuRange(hist, 0);
+  const T = o1 ? o1.t : 128;
+  // Reflexo no tapete tem borda SUAVE (gradual); peça tem borda nítida. Mede que fração do
+  // contorno da área clara é suave: se for grande, há reflexo colado e o 2º nível separa
+  // a peça (bem clara) dele. Sem reflexo, o 2º nível não é usado (peças de brilhos diferentes
+  // — papel branco e papelão — não podem ser confundidas com fundo).
+  let softB = 0, totB = 0;
+  for (let y = 2; y < h - 2; y++) {
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      if (excl[i] || gray[i] <= T) continue;
+      if (gray[i - 1] > T && gray[i + 1] > T && gray[i - w] > T && gray[i + w] > T) continue;
+      const gx = (gray[i + 2] - gray[i - 2]) / 4, gy = (gray[i + 2 * w] - gray[i - 2 * w]) / 4;
+      totB++;
+      if (Math.hypot(gx, gy) < 8) softB++;
+    }
+  }
+  const softShare = totB > 200 ? softB / totB : 0;
+  let Tseed = T;
+  const o2 = otsuRange(hist, Math.ceil(T));
+  if (softShare >= 0.3 && o2 && o2.ratio >= 0.25 && o2.gap >= 25 && o2.lowShare >= 0.05) Tseed = o2.t;
+
+  // sementes = parte bem clara. Pedaços pequenos são ignorados (poeira, riscos).
+  const seeds = new Float32Array(N);
+  let seedCount = 0, seedSum = 0;
+  for (let i = 0; i < N; i++) {
+    if (!excl[i] && gray[i] > Tseed) { seeds[i] = 1; seedCount++; seedSum += gray[i]; }
+  }
+  const minAreaPx = 800 * pxPerMm * pxPerMm; // < ~800 mm² (28x28mm) é sujeira/reflexo
+  if (seedCount < minAreaPx) return { error: "Não encontrei a peça na imagem (nada claro o bastante sobre o tapete)." };
+  const pieceLevel = seedSum / seedCount;
+
+  // região "peça ou perto dela" (sementes dilatadas ~20mm): fica FORA do modelo de fundo
+  const rD = Math.max(2, Math.round(20 * pxPerMm));
+  const dsum = boxSum(seeds, w, h, rD);
+  // modelo de fundo = média local (raio ~40mm) do brilho SÓ dos pixels de fora dessa região:
+  // segue o gradiente do reflexo do tapete e não é puxado pela peça
+  const wgt = new Float32Array(N), gw = new Float32Array(N);
+  let bgSum = 0, bgCnt = 0;
+  for (let i = 0; i < N; i++) {
+    if (dsum[i] === 0 && !excl[i]) { wgt[i] = 1; gw[i] = gray[i]; bgSum += gray[i]; bgCnt++; }
+  }
+  const bgGlobal = bgCnt ? bgSum / bgCnt : 60;
+  const Rb = Math.max(8, Math.round(40 * pxPerMm));
+  const num = boxSum(gw, w, h, Rb), den = boxSum(wgt, w, h, Rb);
+  const delta = Math.max(35, 0.35 * (pieceLevel - bgGlobal));
+  const excess = new Float32Array(N); // brilho acima do fundo local
+  const fg = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (excl[i]) { excess[i] = -255; continue; }
+    const bg = den[i] >= 40 ? num[i] / den[i] : bgGlobal;
+    excess[i] = gray[i] - bg;
+    if (excess[i] > delta || (tape[i] && excess[i] > 25)) fg[i] = 1;
+  }
+
+  // componentes conexos da peça
+  const labels = new Int32Array(N);
+  const stack = new Int32Array(N);
+  const areas = [0];
+  const sums = [0];
+  let nl = 0;
+  for (let i = 0; i < N; i++) {
+    if (!fg[i] || labels[i]) continue;
+    nl++;
+    let sp = 0, area = 0, sum = 0;
+    stack[sp++] = i;
+    labels[i] = nl;
+    while (sp) {
+      const p = stack[--sp];
+      area++;
+      sum += gray[p];
+      const x = p % w, y = (p - x) / w;
+      if (x > 0) { const q = p - 1; if (!labels[q] && fg[q]) { labels[q] = nl; stack[sp++] = q; } }
+      if (x < w - 1) { const q = p + 1; if (!labels[q] && fg[q]) { labels[q] = nl; stack[sp++] = q; } }
+      if (y > 0) { const q = p - w; if (!labels[q] && fg[q]) { labels[q] = nl; stack[sp++] = q; } }
+      if (y < h - 1) { const q = p + w; if (!labels[q] && fg[q]) { labels[q] = nl; stack[sp++] = q; } }
+    }
+    areas.push(area);
+    sums.push(sum);
+  }
+  let maxArea = 0;
+  for (let l = 1; l <= nl; l++) if (areas[l] > maxArea) maxArea = areas[l];
+  if (maxArea < minAreaPx) return { error: "Não encontrei a peça na imagem (nada claro o bastante sobre o tapete)." };
+  if (maxArea > 0.7 * total) return { error: "A área clara ocupa quase todo o tapete — reflexo forte ou peça escura demais pra separar do fundo." };
+  const keepLabel = new Uint8Array(nl + 1);
+  for (let l = 1; l <= nl; l++) if (areas[l] >= Math.max(minAreaPx, 0.01 * maxArea)) keepLabel[l] = 1;
+
+  // Contraste com o fundo ao redor: peça de verdade é bem mais clara que o tapete em volta.
+  {
+    const dist = new Uint8Array(N).fill(255);
+    const owner = new Int32Array(N);
+    let q = [];
+    for (let i = 0; i < N; i++) {
+      const l = labels[i];
+      if (!l || !keepLabel[l]) continue;
+      const x = i % w, y = (i - x) / w;
+      const edge = x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
+        labels[i - 1] !== l || labels[i + 1] !== l || labels[i - w] !== l || labels[i + w] !== l;
+      if (edge) { dist[i] = 0; owner[i] = l; q.push(i); }
+    }
+    const ringSum = new Float64Array(nl + 1), ringCnt = new Float64Array(nl + 1);
+    for (let d = 1; d <= 6 && q.length; d++) {
+      const nq = [];
+      for (const p of q) {
+        const x = p % w, y = (p - x) / w, l = owner[p];
+        const nb = [x > 0 ? p - 1 : -1, x < w - 1 ? p + 1 : -1, y > 0 ? p - w : -1, y < h - 1 ? p + w : -1];
+        for (const n of nb) {
+          if (n < 0 || dist[n] !== 255 || (labels[n] && keepLabel[labels[n]])) continue;
+          dist[n] = d; owner[n] = l; nq.push(n);
+          if (d >= 3 && !excl[n] && !fg[n]) { ringSum[l] += gray[n]; ringCnt[l]++; }
+        }
+      }
+      q = nq;
+    }
+    for (let l = 1; l <= nl; l++) {
+      if (!keepLabel[l]) continue;
+      const meanIn = sums[l] / areas[l];
+      const meanRing = ringCnt[l] ? ringSum[l] / ringCnt[l] : 0;
+      if (meanIn - meanRing < 50) keepLabel[l] = 0;
+    }
+    if (!keepLabel.some((v) => v)) return { error: "Não encontrei a peça: o que tem de claro no tapete parece reflexo (pouco contraste com o fundo)." };
+  }
+
+  // região de interesse = componentes mantidos dilatados em 3px
+  const R = 3;
+  const keep = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (labels[i] && keepLabel[labels[i]]) keep[i] = 1;
+  const dil1 = new Uint8Array(N), dil = new Uint8Array(N);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -R; k <= R && !v; k++) { const xx = x + k; if (xx >= 0 && xx < w && keep[y * w + xx]) v = 1; }
+      dil1[y * w + x] = v;
+    }
+  }
+  let minX = w, maxX = 0, minY = h, maxY = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (let k = -R; k <= R && !v; k++) { const yy = y + k; if (yy >= 0 && yy < h && dil1[yy * w + x]) v = 1; }
+      dil[y * w + x] = v;
+      if (v) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+    }
+  }
+  // campo do marching squares: brilho acima do fundo local menos o limiar (sinal coerente com fg)
+  const W = w + 2, H2 = h + 2;
+  const f = new Float32Array(W * H2).fill(-255);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (!dil[i] || excl[i]) continue;
+      let v = excess[i] - delta;
+      if (fg[i] && v <= 0) v = 0.5;
+      else if (!fg[i] && v > 0) v = -0.5;
+      f[(y + 1) * W + x + 1] = v;
+    }
+  }
+
+  // marching squares com interpolação linear (sub-pixel)
+  const segA = [], segB = [];
+  const adj = new Map();
+  const addSeg = (ka, kb) => {
+    const s = segA.length;
+    segA.push(ka); segB.push(kb);
+    (adj.get(ka) || adj.set(ka, []).get(ka)).push(s);
+    (adj.get(kb) || adj.set(kb, []).get(kb)).push(s);
+  };
+  const y0 = Math.max(0, minY), y1 = Math.min(H2 - 2, maxY + 2);
+  const x0 = Math.max(0, minX), x1 = Math.min(W - 2, maxX + 2);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * W + x;
+      const fa = f[i], fb = f[i + 1], fc = f[i + W + 1], fd = f[i + W];
+      const code = (fa > 0 ? 1 : 0) | (fb > 0 ? 2 : 0) | (fc > 0 ? 4 : 0) | (fd > 0 ? 8 : 0);
+      if (code === 0 || code === 15) continue;
+      const T_ = i * 2, B_ = (i + W) * 2, L_ = i * 2 + 1, R_ = (i + 1) * 2 + 1; // topo, base, esquerda, direita
+      switch (code) {
+        case 1: case 14: addSeg(L_, T_); break;
+        case 2: case 13: addSeg(T_, R_); break;
+        case 3: case 12: addSeg(L_, R_); break;
+        case 4: case 11: addSeg(R_, B_); break;
+        case 6: case 9: addSeg(T_, B_); break;
+        case 7: case 8: addSeg(L_, B_); break;
+        case 5: case 10: {
+          const centerIn = (fa + fb + fc + fd) / 4 > 0;
+          if ((code === 5) === centerIn) { addSeg(T_, R_); addSeg(L_, B_); } else { addSeg(L_, T_); addSeg(R_, B_); }
+          break;
+        }
+      }
+    }
+  }
+  const keyPt = (k) => {
+    const idx = k >> 1;
+    const px = idx % W, py = (idx - px) / W;
+    if (k & 1) { const a = f[idx], b = f[idx + W]; return [px - 1, py - 1 + a / (a - b)]; }
+    const a = f[idx], b = f[idx + 1];
+    return [px - 1 + a / (a - b), py - 1];
+  };
+
+  // Refino local: pra cada ponto do contorno, mede o perfil de brilho na normal (±4px) e leva
+  // o ponto pro cruzamento do MEIO entre o nível claro (peça) e o escuro (fundo) dali.
+  const gAt = (x, y) => {
+    if (x < 0 || y < 0 || x > w - 1 || y > h - 1) return null;
+    const xa = Math.floor(x), ya = Math.floor(y), xb = Math.min(xa + 1, w - 1), yb = Math.min(ya + 1, h - 1);
+    const fx = x - xa, fy = y - ya;
+    const a = gray[ya * w + xa], b = gray[ya * w + xb], c = gray[yb * w + xa], d = gray[yb * w + xb];
+    return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy;
+  };
+  const refineLoop = (loop) => {
+    const n = loop.length;
+    const nx = new Float64Array(n), ny = new Float64Array(n), shifts = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = loop[(i - 3 + n) % n], b = loop[(i + 3) % n];
+      const tx = b[0] - a[0], ty = b[1] - a[1], L = Math.hypot(tx, ty) || 1;
+      nx[i] = ty / L; ny[i] = -tx / L;
+    }
+    for (let i = 0; i < n; i++) {
+      const p = loop[i];
+      const prof = [];
+      for (let d = -4; d <= 4.001; d += 0.5) {
+        const g = gAt(p[0] + nx[i] * d, p[1] + ny[i] * d);
+        if (g === null) { prof.length = 0; break; }
+        prof.push([d, g]);
+      }
+      if (prof.length < 17) continue;
+      const vals = prof.map((q) => q[1]).sort((u, v) => u - v);
+      const lo = (vals[0] + vals[1] + vals[2]) / 3, hi = (vals[16] + vals[15] + vals[14]) / 3;
+      if (hi - lo < 50) continue;
+      const mid = (lo + hi) / 2;
+      let bestD = null;
+      for (let j = 0; j < prof.length - 1; j++) {
+        const g0_ = prof[j][1], g1_ = prof[j + 1][1];
+        if ((g0_ < mid) !== (g1_ < mid)) {
+          const d = prof[j][0] + ((mid - g0_) / (g1_ - g0_)) * (prof[j + 1][0] - prof[j][0]);
+          if (bestD === null || Math.abs(d) < Math.abs(bestD)) bestD = d;
+        }
+      }
+      if (bestD !== null && Math.abs(bestD) <= 2.5) shifts[i] = bestD;
+    }
+    return loop.map((p, i) => {
+      let sm = 0;
+      for (let k = -3; k <= 3; k++) sm += shifts[(i + k + n) % n];
+      sm /= 7;
+      return [p[0] + nx[i] * sm, p[1] + ny[i] * sm];
+    });
+  };
+
+  const visited = new Uint8Array(segA.length);
+  const rawLoops = [];
+  for (let s = 0; s < segA.length; s++) {
+    if (visited[s]) continue;
+    visited[s] = 1;
+    const start = segA[s];
+    let cur = segB[s];
+    const loop = [keyPt(start)];
+    let closed = false;
+    for (let guard = 0; guard < segA.length + 2; guard++) {
+      if (cur === start) { closed = true; break; }
+      loop.push(keyPt(cur));
+      const nexts = adj.get(cur) || [];
+      let ns = -1;
+      for (const c of nexts) if (!visited[c]) { ns = c; break; }
+      if (ns < 0) break;
+      visited[ns] = 1;
+      cur = segA[ns] === cur ? segB[ns] : segA[ns];
+    }
+    if (closed && loop.length >= 4) {
+      const refined = loop.length >= 12 ? refineLoop(loop) : loop;
+      rawLoops.push(refined.map((p) => ({ x: p[0] / pxPerMm, y: p[1] / pxPerMm })));
+    }
+  }
+
+  // simplificação Douglas-Peucker (tolerância 0,15 mm)
+  const TOL = 0.15;
+  const dp = (pts) => {
+    const n = pts.length;
+    const keepIdx = new Uint8Array(n);
+    keepIdx[0] = 1; keepIdx[n - 1] = 1;
+    const st = [[0, n - 1]];
+    while (st.length) {
+      const [a, b] = st.pop();
+      if (b <= a + 1) continue;
+      const pa = pts[a], pb = pts[b];
+      const dx = pb.x - pa.x, dy = pb.y - pa.y, len = Math.hypot(dx, dy) || 1e-9;
+      let md = -1, mi = -1;
+      for (let i = a + 1; i < b; i++) {
+        const d = Math.abs((pts[i].x - pa.x) * dy - (pts[i].y - pa.y) * dx) / len;
+        if (d > md) { md = d; mi = i; }
+      }
+      if (md > TOL) { keepIdx[mi] = 1; st.push([a, mi], [mi, b]); }
+    }
+    return pts.filter((_, i) => keepIdx[i]);
+  };
+  const simplifyClosed = (pts) => {
+    let fi = 0, fd = -1;
+    for (let i = 1; i < pts.length; i++) {
+      const d = Math.hypot(pts[i].x - pts[0].x, pts[i].y - pts[0].y);
+      if (d > fd) { fd = d; fi = i; }
+    }
+    const A = dp(pts.slice(0, fi + 1));
+    const B = dp([...pts.slice(fi), pts[0]]);
+    return [...A.slice(0, -1), ...B.slice(0, -1)];
+  };
+  const signedArea = (pts) => {
+    let a = 0;
+    for (let i = 0; i < pts.length; i++) { const p = pts[i], q = pts[(i + 1) % pts.length]; a += p.x * q.y - q.x * p.y; }
+    return a / 2;
+  };
+  const perim = (pts) => pts.reduce((s, p, i) => s + Math.hypot(pts[(i + 1) % pts.length].x - p.x, pts[(i + 1) % pts.length].y - p.y), 0);
+  const inside = (pt, poly) => {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      if ((poly[i].y > pt.y) !== (poly[j].y > pt.y) &&
+          pt.x < ((poly[j].x - poly[i].x) * (pt.y - poly[i].y)) / (poly[j].y - poly[i].y) + poly[i].x) c = !c;
+    }
+    return c;
+  };
+
+  let loops = rawLoops.map((l) => simplifyClosed(l)).filter((l) => l.length >= 3 && Math.abs(signedArea(l)) >= 50 && perim(l) >= 30);
+  if (!loops.length) return { error: "Não consegui traçar o contorno da peça." };
+  loops = loops.map((pts, i) => {
+    let depth = 0;
+    loops.forEach((other, j) => { if (j !== i && inside(pts[0], other)) depth++; });
+    return { pts, hole: depth % 2 === 1, areaMm2: Math.abs(signedArea(pts)), perimeterMm: perim(pts) };
+  });
+  const outer = loops.filter((l) => !l.hole);
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const l of outer) for (const p of l.pts) { bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y); bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y); }
+  return {
+    loops,
+    bbox: { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 },
+    areaMm2: outer.reduce((s, l) => s + l.areaMm2, 0) - loops.filter((l) => l.hole).reduce((s, l) => s + l.areaMm2, 0),
+    perimeterMm: loops.reduce((s, l) => s + l.perimeterMm, 0),
+    threshold: Tseed,
+    dbg: { T, Tseed, softShare: +softShare.toFixed(2), pieceLevel: Math.round(pieceLevel), bgGlobal: Math.round(bgGlobal), delta: Math.round(delta), components: nl, kept: keepLabel.reduce((a, b) => a + b, 0), segments: segA.length, rawLoops: rawLoops.length },
+  };
+}
+
+// DXF (R12, ASCII, polylines fechadas em mm, Y pra cima). Contorno externo na camada
+// CONTORNO e furos na camada FURO.
+function vectorToDXF(vec, matHeightMm) {
+  const L = [];
+  const add = (code, val) => { L.push(String(code)); L.push(String(val)); };
+  add(0, "SECTION"); add(2, "HEADER"); add(9, "$ACADVER"); add(1, "AC1009"); add(9, "$INSUNITS"); add(70, 4); add(0, "ENDSEC");
+  add(0, "SECTION"); add(2, "TABLES");
+  add(0, "TABLE"); add(2, "LTYPE"); add(70, 1);
+  add(0, "LTYPE"); add(2, "CONTINUOUS"); add(70, 0); add(3, "Solid line"); add(72, 65); add(73, 0); add(40, "0.0");
+  add(0, "ENDTAB");
+  add(0, "TABLE"); add(2, "LAYER"); add(70, 2);
+  add(0, "LAYER"); add(2, "CONTORNO"); add(70, 0); add(62, 7); add(6, "CONTINUOUS");
+  add(0, "LAYER"); add(2, "FURO"); add(70, 0); add(62, 1); add(6, "CONTINUOUS");
+  add(0, "ENDTAB");
+  add(0, "ENDSEC");
+  add(0, "SECTION"); add(2, "ENTITIES");
+  for (const l of vec.loops) {
+    const layer = l.hole ? "FURO" : "CONTORNO";
+    add(0, "POLYLINE"); add(8, layer); add(66, 1); add(70, 1);
+    for (const p of l.pts) { add(0, "VERTEX"); add(8, layer); add(10, p.x.toFixed(3)); add(20, (matHeightMm - p.y).toFixed(3)); add(30, "0.0"); }
+    add(0, "SEQEND"); add(8, layer);
+  }
+  add(0, "ENDSEC"); add(0, "EOF");
+  return L.join("\n") + "\n";
+}
+
+// SVG em mm (mesma orientação da imagem, Y pra baixo).
+function vectorToSVG(vec, matWidthMm, matHeightMm) {
+  const path = (l) => "M" + l.pts.map((p) => p.x.toFixed(3) + " " + p.y.toFixed(3)).join(" L") + " Z";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${matWidthMm.toFixed(1)}mm" height="${matHeightMm.toFixed(1)}mm" viewBox="0 0 ${matWidthMm.toFixed(3)} ${matHeightMm.toFixed(3)}">\n` +
+    vec.loops.map((l) => `  <path d="${path(l)}" fill="none" stroke="${l.hole ? "#ff0000" : "#000000"}" stroke-width="0.25"/>`).join("\n") + "\n</svg>\n";
+}
+/* VECTOR-END */
 
 function markerCenter(corners) {
   let x = 0, y = 0;
@@ -1443,6 +1931,109 @@ btnRetry.addEventListener("click", () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * Vetorização automática do contorno das peças (DXF / SVG em mm reais)
+ * ------------------------------------------------------------------ */
+
+const vectorToggle = el("vectorToggle");
+const vectorInfo = el("vectorInfo");
+const vectorActions = el("vectorActions");
+const vectorShow = el("vectorShow");
+const vectorOverlay = el("vectorOverlay");
+const btnDxf = el("btnDxf");
+const btnSvg = el("btnSvg");
+const VECTOR_KEY = "moldeflat_vector_auto";
+
+try {
+  const sv = localStorage.getItem(VECTOR_KEY);
+  if (sv !== null) vectorToggle.checked = sv === "1";
+} catch (e) { /* padrão: ligado */ }
+vectorToggle.addEventListener("change", () => {
+  try { localStorage.setItem(VECTOR_KEY, vectorToggle.checked ? "1" : "0"); } catch (e) { /* ok */ }
+  if (currentResult) currentResult.vectorPromise = runVectorization(currentResult);
+});
+vectorShow.addEventListener("change", () => vectorOverlay.classList.toggle("hidden", !vectorShow.checked));
+
+function clearVectorUI() {
+  vectorActions.classList.add("hidden");
+  vectorInfo.textContent = "";
+  vectorOverlay.getContext("2d").clearRect(0, 0, vectorOverlay.width, vectorOverlay.height);
+}
+
+function drawVectorOverlay(vec, pxPerMm) {
+  const W = resultCanvas.width, H = resultCanvas.height;
+  vectorOverlay.width = W;
+  vectorOverlay.height = H;
+  const ctx = vectorOverlay.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineWidth = Math.max(2, W / 450);
+  ctx.lineJoin = "round";
+  for (const l of vec.loops) {
+    ctx.strokeStyle = l.hole ? "#ff3b3b" : "#18ff6d";
+    ctx.beginPath();
+    l.pts.forEach((p, i) => (i ? ctx.lineTo(p.x * pxPerMm + 0.5, p.y * pxPerMm + 0.5) : ctx.moveTo(p.x * pxPerMm + 0.5, p.y * pxPerMm + 0.5)));
+    ctx.closePath();
+    ctx.stroke();
+  }
+  vectorOverlay.classList.toggle("hidden", !vectorShow.checked);
+}
+
+async function runVectorization(holder) {
+  const isCurrent = () => currentResult === holder;
+  holder.vector = null;
+  if (isCurrent()) clearVectorUI();
+  if (!vectorToggle.checked) {
+    if (isCurrent()) vectorInfo.textContent = "Vetorização automática desligada.";
+    return;
+  }
+  if (isCurrent()) vectorInfo.textContent = "Vetorizando o contorno das peças…";
+  await nextFrame();
+  const { canvas, outW, outH, pxPerMm, profile } = holder.geo;
+  let vec;
+  try {
+    const img = canvas.getContext("2d").getImageData(0, 0, outW, outH);
+    vec = vectorizePiece(img.data, outW, outH, pxPerMm, profile);
+  } catch (e) {
+    vec = { error: "Erro ao vetorizar: " + e.message };
+  }
+  if (vec.error) {
+    if (isCurrent()) vectorInfo.textContent = vec.error;
+    return;
+  }
+  vec.dxf = vectorToDXF(vec, outH / pxPerMm);
+  vec.svg = vectorToSVG(vec, outW / pxPerMm, outH / pxPerMm);
+  holder.vector = vec;
+  if (!isCurrent()) return;
+  drawVectorOverlay(vec, pxPerMm);
+  const fmt = (v) => v.toFixed(1).replace(".", ",");
+  const outer = vec.loops.filter((l) => !l.hole);
+  const holes = vec.loops.length - outer.length;
+  const dims = outer.slice(0, 8).map((l, i) => {
+    const xs = l.pts.map((p) => p.x), ys = l.pts.map((p) => p.y);
+    return "Peça " + (i + 1) + ": " + fmt(Math.max(...xs) - Math.min(...xs)) + " x " + fmt(Math.max(...ys) - Math.min(...ys)) + " mm";
+  });
+  vectorInfo.textContent =
+    "Contorno vetorizado: " + outer.length + " peça(s), " + holes + " furo(s).\n" + dims.join("\n") +
+    "\nVerde = contorno, vermelho = furos. Confira o desenho sobre a imagem antes de mandar cortar.";
+  vectorActions.classList.remove("hidden");
+}
+
+function downloadText(text, filename) {
+  const blob = new Blob([text], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+btnDxf.addEventListener("click", () => {
+  if (currentResult && currentResult.vector) downloadText(currentResult.vector.dxf, "molde_" + fileStamp(new Date()) + ".dxf");
+});
+btnSvg.addEventListener("click", () => {
+  if (currentResult && currentResult.vector) downloadText(currentResult.vector.svg, "molde_" + fileStamp(new Date()) + ".svg");
+});
+
+/* ------------------------------------------------------------------ *
  * Lote de fotos: guarda cada foto aprovada (no aparelho, em IndexedDB —
  * sobrevive a fechar/recarregar o app) e envia/baixa tudo de uma vez.
  * ------------------------------------------------------------------ */
@@ -1454,6 +2045,7 @@ const batchTitle = el("batchTitle");
 const batchList = el("batchList");
 const btnBatchShare = el("btnBatchShare");
 const btnBatchZip = el("btnBatchZip");
+const btnBatchShareZip = el("btnBatchShareZip");
 const btnBatchMore = el("btnBatchMore");
 const btnBatchClear = el("btnBatchClear");
 
@@ -1513,6 +2105,7 @@ function addToBatchList(rec) {
   batch.push({
     id: rec.id, seq: rec.seq, name: rec.name, blob: rec.blob,
     thumbUrl: URL.createObjectURL(rec.thumb), profile: rec.profile, errPct: rec.errPct,
+    dxf: rec.dxf || null, svg: rec.svg || null,
   });
 }
 
@@ -1520,11 +2113,15 @@ async function saveCurrentToBatch() {
   if (!currentResult) return;
   const r = currentResult;
   currentResult = null;
+  if (r.vectorPromise) { try { await r.vectorPromise; } catch (e) { /* segue sem vetor */ } }
   const blob = await new Promise((res) => r.canvas.toBlob(res, "image/png"));
   const thumb = await makeThumb(r.canvas);
   const seq = batch.reduce((m, b) => Math.max(m, b.seq), 0) + 1;
   const name = `molde_${String(seq).padStart(2, "0")}_${fileStamp(new Date())}.png`;
-  const rec = { seq, name, blob, thumb, profile: r.profileName, errPct: r.errPct, createdAt: Date.now() };
+  const rec = {
+    seq, name, blob, thumb, profile: r.profileName, errPct: r.errPct, createdAt: Date.now(),
+    dxf: r.vector ? r.vector.dxf : null, svg: r.vector ? r.vector.svg : null,
+  };
   const id = await dbAdd(rec);
   rec.id = id != null ? id : --memoryOnlyId; // sem IndexedDB: fica só na memória da sessão
   addToBatchList(rec);
@@ -1546,7 +2143,7 @@ function renderBatch() {
     img.src = b.thumbUrl;
     img.alt = b.name;
     const label = document.createElement("span");
-    label.textContent = "#" + String(b.seq).padStart(2, "0") + " · " + b.errPct.toFixed(2).replace(".", ",") + "%";
+    label.textContent = "#" + String(b.seq).padStart(2, "0") + " · " + b.errPct.toFixed(2).replace(".", ",") + "%" + (b.dxf ? " · DXF" : "");
     const del = document.createElement("button");
     del.className = "batch-del";
     del.type = "button";
@@ -1601,9 +2198,35 @@ btnBatchShare.addEventListener("click", async () => {
   }
 });
 
+async function buildBatchZip() {
+  const files = [];
+  for (const b of batch) {
+    files.push({ name: b.name, blob: b.blob });
+    const base = b.name.replace(/\.png$/, "");
+    if (b.dxf) files.push({ name: base + ".dxf", blob: new Blob([b.dxf]) });
+    if (b.svg) files.push({ name: base + ".svg", blob: new Blob([b.svg]) });
+  }
+  return buildZip(files);
+}
+
+btnBatchShareZip.addEventListener("click", async () => {
+  if (!batch.length) return;
+  const zip = await buildBatchZip();
+  const file = new File([zip], "moldes_" + fileStamp(new Date()) + ".zip", { type: "application/zip" });
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) {
+    alert("Este navegador não consegue compartilhar o .zip direto. Use \"Baixar todas (.zip)\" e envie o arquivo baixado.");
+    return;
+  }
+  try {
+    await navigator.share({ files: [file], title: "Moldes digitalizados (" + batch.length + ")" });
+  } catch (e) {
+    if (e && e.name !== "AbortError") alert("Não foi possível compartilhar: " + e.message);
+  }
+});
+
 btnBatchZip.addEventListener("click", async () => {
   if (!batch.length) return;
-  const zip = await buildZip(batch.map((b) => ({ name: b.name, blob: b.blob })));
+  const zip = await buildBatchZip();
   const url = URL.createObjectURL(zip);
   const a = document.createElement("a");
   a.href = url;
