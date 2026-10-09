@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.9";
+const APP_VERSION = "2026-10-09.10";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -1182,6 +1182,100 @@ function detectArcs(base, rSnap, rMin, rMax, orient) {
   return { q, arcs: arcs.filter((a) => a.e >= a.s) };
 }
 
+// Raios MÉDIOS (4 a 20 mm), mais abertos que os de 3 mm: usa uma linha de base maior pra enxergar
+// a curva, ajusta um círculo no miolo do trecho e prolonga/refaz o ajuste enquanto o contorno
+// acompanha o círculo (0,2 mm). O raio é o MEDIDO (arredondado só se estiver a menos de 0,25 mm
+// de um valor redondo: 4, 5, 6, 8, 10, 12, 15, 20). 'taken' = arcos já reconhecidos (não repete).
+function detectMediumArcs(q, taken, orient) {
+  const m = q.length, ds = 0.4, K = 10;
+  const takenMask = new Uint8Array(m);
+  for (const a of taken) for (let k = Math.max(0, a.s - 6); k <= Math.min(m - 1, a.e + 6); k++) takenMask[k] = 1;
+  const flag = new Uint8Array(m);
+  const lim = (14 * Math.PI) / 180;
+  for (let i = K; i < m - K; i++) {
+    if (takenMask[i]) continue;
+    const a = q[i - K], b = q[i], c = q[i + K];
+    const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
+    if (Math.abs(Math.atan2(v1x * v2y - v1y * v2x, v1x * v2x + v1y * v2y)) > lim) flag[i] = 1;
+  }
+  const out = [];
+  const ROUND = [4, 5, 6, 8, 10, 12, 15, 20];
+  let i = 0;
+  while (i < m) {
+    if (!flag[i]) { i++; continue; }
+    let e = i;
+    while (e + 1 < m && flag[e + 1]) e++;
+    const i0 = i, i1 = e;
+    i = e + 1;
+    const n = i1 - i0 + 1;
+    if (n < 15 || n > 200) continue;
+    let lo = i0 + Math.floor(n / 4), hi = i1 - Math.floor(n / 4);
+    if (hi - lo < 8) continue;
+    let fit = fitCircleXY(q.slice(lo, hi + 1));
+    for (let iter = 0; iter < 4 && fit; iter++) {
+      const dist = (p) => Math.abs(Math.hypot(p.x - fit.cx, p.y - fit.cy) - fit.r);
+      while (lo - 1 >= 1 && lo - 1 >= i0 - 12 && !takenMask[lo - 1] && dist(q[lo - 1]) <= 0.2) lo--;
+      while (hi + 1 <= m - 2 && hi + 1 <= i1 + 12 && !takenMask[hi + 1] && dist(q[hi + 1]) <= 0.2) hi++;
+      fit = fitCircleXY(q.slice(lo, hi + 1));
+    }
+    if (!fit || fit.r < 3.9 || fit.r > 20 || fit.maxRes > 0.25) continue;
+    if ((hi - lo) * ds < 3.5) continue;
+    const aLo = Math.atan2(q[lo].y - fit.cy, q[lo].x - fit.cx), aHi = Math.atan2(q[hi].y - fit.cy, q[hi].x - fit.cx);
+    let d = aHi - aLo;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d <= -Math.PI) d += 2 * Math.PI;
+    if (Math.abs(d) < (12 * Math.PI) / 180 || Math.abs(d) > (160 * Math.PI) / 180) continue;
+    // arco côncavo (contra o sentido do contorno): mesmo rigor extra das quinas pequenas
+    if (orient && Math.sign(d) !== orient && fit.maxRes > 0.2) continue;
+    // 1) filete exato entre as duas retas vizinhas: varre o raio que melhor encaixa no trecho
+    const nearest = (p, lo2, hi2) => {
+      let bi = lo2, bd = 1e9;
+      for (let k = Math.max(1, lo2); k <= Math.min(m - 2, hi2); k++) { const dd = Math.hypot(q[k].x - p.x, q[k].y - p.y); if (dd < bd) { bd = dd; bi = k; } }
+      return bi;
+    };
+    let built = null;
+    if (lo - 13 >= 0 && hi + 13 <= m - 1) {
+      const before = q.slice(lo - 13, lo - 2), after = q.slice(hi + 3, hi + 14);
+      const L1 = fitLineXY(before), L2 = fitLineXY(after);
+      if (L1.maxRes <= 0.3 && L2.maxRes <= 0.3) {
+        const unit = (pts) => { const p0 = pts[0], p1 = pts[pts.length - 1], L = Math.hypot(p1.x - p0.x, p1.y - p0.y) || 1; return { x: (p1.x - p0.x) / L, y: (p1.y - p0.y) / L }; };
+        const d1 = unit(before), d2 = unit(after);
+        const theta = Math.atan2(d1.x * d2.y - d1.y * d2.x, d1.x * d2.x + d1.y * d2.y);
+        const det = L1.dx * L2.dy - L1.dy * L2.dx;
+        if (Math.abs(theta) >= (12 * Math.PI) / 180 && Math.abs(theta) <= (160 * Math.PI) / 180 && Math.abs(det) > 0.1) {
+          const tt = ((L2.x - L1.x) * L2.dy - (L2.y - L1.y) * L2.dx) / det;
+          const X = { x: L1.x + L1.dx * tt, y: L1.y + L1.dy * tt };
+          const sg = Math.sign(theta), nrm = { x: -d1.y * sg, y: d1.x * sg };
+          const k0 = Math.floor((hi - lo) * 0.15);
+          const mid = q.slice(lo + k0, hi - k0 + 1);
+          let bestR = null, bestRes = 1e9;
+          for (let R = 3.9; R <= 20.001; R += 0.05) {
+            const tl = R * Math.tan(Math.abs(theta) / 2);
+            const c0 = { x: X.x - d1.x * tl + nrm.x * R, y: X.y - d1.y * tl + nrm.y * R };
+            let mr = 0;
+            for (const p of mid) mr = Math.max(mr, Math.abs(Math.hypot(p.x - c0.x, p.y - c0.y) - R));
+            if (mr < bestRes) { bestRes = mr; bestR = R; }
+          }
+          if (bestR !== null && bestRes <= 0.25) {
+            let R = Math.round(bestR * 10) / 10;
+            for (const rr of ROUND) if (Math.abs(bestR - rr) <= 0.25) { R = rr; break; }
+            const tl = R * Math.tan(Math.abs(theta) / 2);
+            const S = { x: X.x - d1.x * tl, y: X.y - d1.y * tl }, E = { x: X.x + d2.x * tl, y: X.y + d2.y * tl };
+            built = { s: nearest(S, lo - 16, lo + 2), e: nearest(E, hi - 2, hi + 16), S, E, bulge: Math.tan(theta / 4), radius: R };
+          }
+        }
+      }
+    }
+    if (built) { out.push(built); continue; }
+    // 2) sem retas boas: o arco do próprio ajuste de círculo
+    let r = fit.r;
+    for (const rr of ROUND) if (Math.abs(r - rr) <= 0.25) { r = rr; break; }
+    const proj = (p) => { const dx = p.x - fit.cx, dy = p.y - fit.cy, L = Math.hypot(dx, dy) || 1; return { x: fit.cx + (dx / L) * r, y: fit.cy + (dy / L) * r }; };
+    out.push({ s: lo, e: hi, S: proj(q[lo]), E: proj(q[hi]), bulge: Math.tan(d / 4), radius: r });
+  }
+  return out;
+}
+
 // pontos densos de um contorno com arcos (pra área, desenho e dimensões)
 function expandLoop(pts, perArc) {
   const out = [];
@@ -1676,7 +1770,12 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
         if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
       }
       const base = smoothKeepCorners(raw);
-      const det = detectArcs(base, 3, 2.3, 3.9, Math.sign(signedArea(raw)));
+      const orient = Math.sign(signedArea(raw));
+      const det = detectArcs(base, 3, 2.3, 3.9, orient);
+      const med = detectMediumArcs(det.q, det.arcs, orient);
+      det.arcs = det.arcs.concat(med).sort((p1, p2) => p1.s - p2.s);
+      for (let j = 0; j < det.arcs.length - 1; j++) if (det.arcs[j + 1].s <= det.arcs[j].e) det.arcs[j].e = det.arcs[j + 1].s - 1;
+      det.arcs = det.arcs.filter((a) => a.e >= a.s);
       let pts;
       if (!det.arcs.length) {
         pts = sharpenCorners(simplifyClosed(base), false);
@@ -2779,7 +2878,7 @@ function buildVectorView(holder) {
   });
   vectorInfo.textContent =
     outer.length + " peça(s), uma linha fechada cada" + (holes ? ", " + holes + " furo(s)" : "") +
-    (arcCount ? ", " + arcCount + " arco(s) R3" : "") + (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
+    (arcCount ? ", " + arcCount + " arco(s)" : "") + (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
     dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar.";
   vectorActions.classList.remove("hidden");
 }
