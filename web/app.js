@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.8";
+const APP_VERSION = "2026-10-09.9";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -1033,14 +1033,17 @@ function fitLineXY(pts) {
 }
 
 // Acha trechos curtos de curvatura alta cujo raio é ~3 mm (entre rMin e rMax) e os troca por um
-// arco de FILETE de raio rSnap, tangente às duas retas vizinhas (ajustadas nos trechos retos de
-// cada lado). Se as retas forem paralelas (ponta de dedo/orelha), o arco é o semicírculo entre
-// elas. Sem retas boas dos dois lados, cai num arco ajustado direto ao trecho curvo.
+// arco de FILETE de raio rSnap, tangente às retas vizinhas (ajustadas nos trechos retos de cada
+// lado). Retas paralelas (ponta de dedo/ranhura) viram o semicírculo entre elas. Um trecho que
+// não é um arco só (duas quinas R3 com um pedaço reto no meio, como a ponta de uma ranhura
+// retangular) é DIVIDIDO em dois arcos. Sem retas boas, o arco é ajustado ao próprio trecho
+// curvo e prolongado até onde o contorno acompanha o círculo.
 // Retorna { q (reamostrado e girado), arcs: [{ s, e, S, E, bulge }] }.
 function detectArcs(base, rSnap, rMin, rMax, orient) {
   const ds = 0.4, K = 4;
   let q = resampleClosed(base, ds);
   const m = q.length;
+  const dbg = (typeof __arcDbg === "function") ? __arcDbg : null;
   const turnAt = (i) => {
     const a = q[(i - K + m) % m], b = q[i], c = q[(i + K) % m];
     const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
@@ -1059,7 +1062,7 @@ function detectArcs(base, rSnap, rMin, rMax, orient) {
   // gira pra que o índice 0 fique no MEIO do maior trecho sem curva (nenhum arco cruza o início)
   let bestStart = -1, bestLen = 0;
   for (let i = 0; i < m; i++) {
-    if (flag[i] || flag[(i - 1 + m) % m] === 0) continue; // só começos de trecho sem curva
+    if (flag[i] || flag[(i - 1 + m) % m] === 0) continue;
     let len = 0;
     while (len < m && !flag[(i + len) % m]) len++;
     if (len > bestLen) { bestLen = len; bestStart = i; }
@@ -1069,57 +1072,54 @@ function detectArcs(base, rSnap, rMin, rMax, orient) {
   q = q.slice(rot).concat(q.slice(0, rot));
   flag = Array.from(flag.slice(rot)).concat(Array.from(flag.slice(0, rot)));
 
-  const arcs = [];
   const TWO = Math.PI * 2;
-  let i = 0;
-  while (i < m) {
-    if (!flag[i]) { i++; continue; }
-    let e = i;
-    while (e + 1 < m && flag[e + 1]) e++;
-    const n = e - i + 1;
-    const s0 = i; i = e + 1;
-    if (n * ds > 16 || n < 3) continue;
-    if (s0 < 3 || e > m - 4) continue;
-    const seg = q.slice(s0 - 1, e + 2);
-    const c = fitCircleXY(seg);
-    if (!c || c.r < rMin || c.r > rMax || c.maxRes > 0.45) continue;
+  const ang = (p, c) => Math.atan2(p.y - c.y, p.x - c.x);
+  const turnSum = (i0, i1) => {
     let phi = 0;
-    for (let k = s0; k <= e; k++) {
+    for (let k = i0; k <= i1; k++) {
       const a = q[k - 1], b = q[k], d = q[k + 1];
       phi += Math.atan2((b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x), (b.x - a.x) * (d.x - b.x) + (b.y - a.y) * (d.y - b.y));
     }
-    if (Math.abs(phi) < (25 * Math.PI) / 180 || Math.abs(phi) > (200 * Math.PI) / 180) continue;
-    // arco côncavo (sentido oposto ao do contorno): o desfoque arredonda quina viva, então exige
-    // um ajuste mais rigoroso (raio entre 2,7 e 3,5 mm e resíduo menor) pra não inventar raio
-    if (orient && Math.sign(phi) !== orient && (c.r < 2.7 || c.r > 3.5 || c.maxRes > 0.3)) continue;
-
-    // retas vizinhas: pontos retos antes e depois do trecho (até ~7 mm, parando em outra curva)
+    return phi;
+  };
+  // um trecho [i0..i1] é arco? devolve { c, phi } ou null (raio, resíduo, ângulo e concavidade)
+  const tryArc = (i0, i1) => {
+    if (i1 - i0 < 3) return null;
+    const c = fitCircleXY(q.slice(i0 - 1, i1 + 2));
+    if (!c || c.r < rMin || c.r > rMax || c.maxRes > 0.45) return null;
+    const phi = turnSum(i0, i1);
+    if (Math.abs(phi) < (25 * Math.PI) / 180 || Math.abs(phi) > (200 * Math.PI) / 180) return null;
+    if (orient && Math.sign(phi) !== orient && (c.r < 2.7 || c.r > 3.5 || c.maxRes > 0.3)) return null;
+    return { c, phi };
+  };
+  // monta o arco (extremidades, centro, bulge) a partir do ajuste; lo/hi limitam a prolongação
+  const buildArc = (i0, i1, fit, lo, hi) => {
+    const { c, phi } = fit;
     const before = [], after = [];
-    for (let k = s0 - 3; k >= 0 && !flag[k] && before.length < 18; k--) before.push(q[k]);
-    for (let k = e + 3; k < m && !flag[k] && after.length < 18; k++) after.push(q[k]);
-    let S = null, E = null, ctr = null, rad = rSnap;
+    for (let k = i0 - 3; k >= Math.max(0, lo) && !flag[k] && before.length < 18; k--) before.push(q[k]);
+    for (let k = i1 + 3; k <= Math.min(m - 1, hi) && !flag[k] && after.length < 18; k++) after.push(q[k]);
+    let S = null, E = null, ctr = null, sIdx = Math.max(1, i0 - 3), eIdx = Math.min(m - 2, i1 + 3);
     if (before.length >= 8 && after.length >= 8) {
       const L1 = fitLineXY(before), L2 = fitLineXY(after);
       if (L1.maxRes <= 0.35 && L2.maxRes <= 0.35) {
         const cross = Math.abs(L1.dx * L2.dy - L1.dy * L2.dx);
         const s1 = (c.cx - L1.x) * L1.nx + (c.cy - L1.y) * L1.ny;
         const s2 = (c.cx - L2.x) * L2.nx + (c.cy - L2.y) * L2.ny;
-        if (cross < Math.sin((8 * Math.PI) / 180)) {
-          // paralelas: semicírculo entre elas (largura deve dar ~2R)
+        let rad = rSnap;
+        if (cross < Math.sin((8 * Math.PI) / 180)) { // paralelas: semicírculo entre elas
           const dd = Math.abs((L2.x - L1.x) * L1.nx + (L2.y - L1.y) * L1.ny);
           if (Math.abs(dd / 2 - rSnap) <= 0.8) {
             const target = ((L2.x - L1.x) * L1.nx + (L2.y - L1.y) * L1.ny) / 2;
             ctr = { x: c.cx + L1.nx * (target - s1), y: c.cy + L1.ny * (target - s1) };
             rad = dd / 2;
           }
-        } else {
-          // filete de raio rSnap: centro no cruzamento das retas deslocadas rSnap pro lado do centro
+        } else { // filete de raio rSnap tangente às duas retas
           const o1 = Math.sign(s1) * rSnap, o2 = Math.sign(s2) * rSnap;
           const p1 = { x: L1.x + L1.nx * o1, y: L1.y + L1.ny * o1 }, p2 = { x: L2.x + L2.nx * o2, y: L2.y + L2.ny * o2 };
           const det = L1.dx * L2.dy - L1.dy * L2.dx;
           const t = ((p2.x - p1.x) * L2.dy - (p2.y - p1.y) * L2.dx) / det;
           const cc = { x: p1.x + L1.dx * t, y: p1.y + L1.dy * t };
-          if (Math.hypot(cc.x - c.cx, cc.y - c.cy) <= 2.5) { ctr = cc; rad = rSnap; }
+          if (Math.hypot(cc.x - c.cx, cc.y - c.cy) <= 2.5) ctr = cc;
         }
         if (ctr) {
           const f1 = (ctr.x - L1.x) * L1.dx + (ctr.y - L1.y) * L1.dy, f2 = (ctr.x - L2.x) * L2.dx + (ctr.y - L2.y) * L2.dy;
@@ -1128,17 +1128,58 @@ function detectArcs(base, rSnap, rMin, rMax, orient) {
         }
       }
     }
-    if (!S) { // sem retas boas: arco ajustado direto ao trecho curvo
-      ctr = { x: c.cx, y: c.cy }; rad = rSnap;
+    if (!S) { // sem retas boas: arco ajustado ao trecho, prolongado até onde acompanha o círculo
+      ctr = { x: c.cx, y: c.cy };
+      let ea = i0, eb = i1;
+      while (ea - 1 > lo && Math.abs(Math.hypot(q[ea - 1].x - c.cx, q[ea - 1].y - c.cy) - c.r) <= 0.15) ea--;
+      while (eb + 1 < hi && Math.abs(Math.hypot(q[eb + 1].x - c.cx, q[eb + 1].y - c.cy) - c.r) <= 0.15) eb++;
       const proj = (p) => { const dx = p.x - c.cx, dy = p.y - c.cy, L = Math.hypot(dx, dy) || 1; return { x: c.cx + (dx / L) * rSnap, y: c.cy + (dy / L) * rSnap }; };
-      S = proj(q[s0]); E = proj(q[e]);
+      S = proj(q[ea]); E = proj(q[eb]);
+      sIdx = Math.max(1, ea); eIdx = Math.min(m - 2, eb);
     }
-    let d = Math.atan2(E.y - ctr.y, E.x - ctr.x) - Math.atan2(S.y - ctr.y, S.x - ctr.x);
+    let d = ang(E, ctr) - ang(S, ctr);
     if (phi > 0) d = ((d % TWO) + TWO) % TWO; else d = -((((-d) % TWO) + TWO) % TWO);
-    // pontos do caminho entre as extremidades: devem ficar dentro do trecho (s0-6 .. e+6)
-    arcs.push({ s: Math.max(1, s0 - 3), e: Math.min(m - 2, e + 3), S, E, bulge: Math.tan(d / 4) });
+    return { s: sIdx, e: eIdx, S, E, bulge: Math.tan(d / 4) };
+  };
+
+  const arcs = [];
+  let i = 0;
+  while (i < m) {
+    if (!flag[i]) { i++; continue; }
+    let e = i;
+    while (e + 1 < m && flag[e + 1]) e++;
+    const n = e - i + 1;
+    const s0 = i; i = e + 1;
+    if (n * ds > 20 || n < 3) { if (dbg) dbg({ why: n * ds > 20 ? "longo" : "curto", len: +(n * ds).toFixed(1), at: [+q[s0].x.toFixed(1), +q[s0].y.toFixed(1)] }); continue; }
+    if (s0 < 3 || e > m - 4) continue;
+    const whole = tryArc(s0, e);
+    if (whole) { arcs.push(buildArc(s0, e, whole, s0 - 12, e + 12)); continue; }
+    // dois arcos com um pedaço reto no meio (ponta de ranhura com quinas R3)
+    let best = null;
+    if (n >= 10) {
+      for (let ia = s0 + 3; ia <= e - 6; ia++) {
+        const r1 = tryArc(s0, ia);
+        if (!r1) continue;
+        for (let ib = ia + 1; ib <= Math.min(e - 3, ia + 16); ib++) {
+          const r2 = tryArc(ib, e);
+          if (!r2) continue;
+          const cost = Math.max(r1.c.maxRes, r2.c.maxRes);
+          if (!best || cost < best.cost) best = { cost, ia, ib, r1, r2 };
+        }
+      }
+    }
+    if (best) {
+      const mid = Math.floor((best.ia + best.ib) / 2);
+      arcs.push(buildArc(s0, best.ia, best.r1, s0 - 12, mid));
+      arcs.push(buildArc(best.ib, e, best.r2, mid + 1, e + 12));
+    } else if (dbg) {
+      const c = fitCircleXY(q.slice(s0 - 1, e + 2));
+      dbg({ why: "sem-arco", r: c && +c.r.toFixed(2), res: c && +c.maxRes.toFixed(2), len: +(n * ds).toFixed(1), at: [+q[s0].x.toFixed(1), +q[s0].y.toFixed(1)] });
+    }
   }
-  return { q, arcs };
+  // arcos não podem se sobrepor no caminho (a cadeia entre eles seria o contorno todo)
+  for (let j = 0; j < arcs.length - 1; j++) if (arcs[j + 1].s <= arcs[j].e) arcs[j].e = arcs[j + 1].s - 1;
+  return { q, arcs: arcs.filter((a) => a.e >= a.s) };
 }
 
 // pontos densos de um contorno com arcos (pra área, desenho e dimensões)
