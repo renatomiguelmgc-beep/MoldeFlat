@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-08.1";
+const APP_VERSION = "2026-10-09.1";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -177,6 +177,7 @@ const LIVE_EDGE_MARGIN = 0.015;    // fração do quadro: marcador mais perto da
 const LIVE_MAX_SKEW = 0.07;        // diferença máxima de tamanho entre marcadores (~inclinação de 7°)
 const LIVE_MAX_MOVE_PX = 10;       // movimento médio entre análises (px da câmera) acima disso = tremendo
 let LIVE_TARGET_ERR_PCT = 0.8;     // erro de calibração (%, o mesmo do resultado final, com a fita) máximo pra capturar sozinho
+const LIVE_MAX_TRIES = 10;         // medições completas sem atingir a meta: captura a melhor que viu
 const LIVE_PRECHECK_PCT = 2.5;     // só roda a conta completa (com fita, mais pesada) se a estimativa só com os 4 cantos estiver abaixo disso
 const LIVE_STABLE_FRAMES = 5;      // análises boas seguidas pra capturar (~1 s)
 
@@ -195,6 +196,9 @@ let liveGoodCount = 0;
 let liveBadStreak = 0;
 let liveErrHistory = [];
 let liveBestExact = null;
+let liveBestFrame = null;   // { pct, found } do melhor quadro medido (canvas em liveBestCanvas)
+let liveExactTries = 0;
+const liveBestCanvas = document.createElement("canvas");
 const liveFullCanvas = document.createElement("canvas");
 let livePrevCenters = null;
 let liveDetector = null;
@@ -206,6 +210,8 @@ function startLiveAnalysis() {
   liveBadStreak = 0;
   liveErrHistory = [];
   liveBestExact = null;
+  liveBestFrame = null;
+  liveExactTries = 0;
   livePrevCenters = null;
   setLiveHint("bad", "Iniciando câmera…", "v" + APP_VERSION);
   liveTimer = setTimeout(liveTick, 300);
@@ -438,7 +444,7 @@ async function liveTick() {
   } else {
     liveBadStreak++;
     // um quadro ruim isolado (detecção falhou 1x) não zera a contagem
-    if (liveBadStreak >= 2) { liveGoodCount = 0; liveErrHistory = []; }
+    if (liveBadStreak >= 2) { liveGoodCount = 0; liveErrHistory = []; liveBestFrame = null; liveExactTries = 0; liveBestExact = null; }
     if (result.level === "bad") livePrevCenters = null;
   }
   const pc = (v) => v.toFixed(2).replace(".", ",") + "%";
@@ -462,7 +468,14 @@ async function liveTick() {
       const exact = liveFinalError(found, vw, vh);
       if (!liveActive) return;
       if (exact) {
-        if (liveBestExact == null || exact.pct < liveBestExact) liveBestExact = exact.pct;
+        liveExactTries++;
+        if (liveBestFrame == null || exact.pct < liveBestFrame.pct) {
+          liveBestCanvas.width = vw;
+          liveBestCanvas.height = vh;
+          liveBestCanvas.getContext("2d").drawImage(liveFullCanvas, 0, 0);
+          liveBestFrame = { pct: exact.pct, found };
+        }
+        liveBestExact = liveBestFrame.pct;
         const exactStr = pc(exact.pct);
         const info = detail + ` · 4 cantos ${roughStr} · com fita ${exactStr} (${exact.ribbonPts} pts)`;
         if (exact.pct <= LIVE_TARGET_ERR_PCT) {
@@ -473,9 +486,15 @@ async function liveTick() {
             return;
           }
           setLiveHint("good", `Foto ajustada (erro ${exactStr}) — pode tirar a foto`, info);
+        } else if (autoCaptureToggle.checked && liveExactTries >= LIVE_MAX_TRIES) {
+          // não chegou na meta depois de várias medições: usa o melhor quadro que viu
+          setLiveHint("good", `Não chegou em ${metaStr} — capturando a melhor foto (erro ${pc(liveBestFrame.pct)})…`, info);
+          if (navigator.vibrate) navigator.vibrate(60);
+          captureFromVideo(liveBestFrame.found, liveBestCanvas);
+          return;
         } else {
           setLiveHint("warn",
-            `Quase lá — erro ${exactStr} (meta até ${metaStr}; melhor até agora ${pc(liveBestExact)}). Segure reto e firme, ajuste a distância e evite reflexo`,
+            `Quase lá — erro ${exactStr} (meta até ${metaStr}; melhor até agora ${pc(liveBestExact)}). Medição ${liveExactTries}/${LIVE_MAX_TRIES}: se não chegar na meta, uso a melhor foto`,
             info);
         }
       }
