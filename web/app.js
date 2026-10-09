@@ -4,7 +4,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.7";
+const APP_VERSION = "2026-10-09.8";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -974,6 +974,191 @@ function otsuRange(hist, lo) {
   return { t: bt, ratio: varT > 0 ? best / varT : 0, gap: bGap, lowShare: bLow };
 }
 
+// ---- Arcos de raio pequeno (dedos/orelhas com ponta redonda, cantos arredondados) ----
+// O vértice com "bulge" começa um arco até o vértice seguinte (como no DXF: bulge = tan(ângulo/4)).
+
+// reamostra polilinha fechada em passo uniforme ds (mm)
+function resampleClosed(pts, ds) {
+  const n = pts.length;
+  const cum = [0];
+  for (let i = 0; i < n; i++) cum.push(cum[i] + Math.hypot(pts[(i + 1) % n].x - pts[i].x, pts[(i + 1) % n].y - pts[i].y));
+  const L = cum[n];
+  const m = Math.max(8, Math.round(L / ds));
+  const out = [];
+  let j = 0;
+  for (let k = 0; k < m; k++) {
+    const t = (k * L) / m;
+    while (j < n - 1 && cum[j + 1] < t) j++;
+    const seg = cum[j + 1] - cum[j] || 1e-9;
+    const u = (t - cum[j]) / seg;
+    const a = pts[j], b = pts[(j + 1) % n];
+    out.push({ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u });
+  }
+  return out;
+}
+
+function fitCircleXY(pts) {
+  const n = pts.length;
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= n; my /= n;
+  let Suu = 0, Suv = 0, Svv = 0, Suuu = 0, Svvv = 0, Suvv = 0, Svuu = 0;
+  for (const p of pts) {
+    const u = p.x - mx, v = p.y - my;
+    Suu += u * u; Suv += u * v; Svv += v * v; Suuu += u * u * u; Svvv += v * v * v; Suvv += u * v * v; Svuu += v * u * u;
+  }
+  const det = Suu * Svv - Suv * Suv;
+  if (Math.abs(det) < 1e-9) return null;
+  const uc = (Svv * (Suuu + Suvv) / 2 - Suv * (Svvv + Svuu) / 2) / det;
+  const vc = (Suu * (Svvv + Svuu) / 2 - Suv * (Suuu + Suvv) / 2) / det;
+  const cx = mx + uc, cy = my + vc;
+  const r = pts.reduce((a, p) => a + Math.hypot(p.x - cx, p.y - cy), 0) / n;
+  const maxRes = Math.max(...pts.map((p) => Math.abs(Math.hypot(p.x - cx, p.y - cy) - r)));
+  return { cx, cy, r, maxRes };
+}
+
+// Reta (TLS) por pontos: devolve ponto médio, direção unitária e normal unitária
+function fitLineXY(pts) {
+  const n = pts.length;
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= n; my /= n;
+  let sxx = 0, sxy = 0, syy = 0;
+  for (const p of pts) { const dx = p.x - mx, dy = p.y - my; sxx += dx * dx; sxy += dx * dy; syy += dy * dy; }
+  const ang = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+  const dx = Math.cos(ang), dy = Math.sin(ang);
+  let maxRes = 0;
+  for (const p of pts) maxRes = Math.max(maxRes, Math.abs((p.x - mx) * -dy + (p.y - my) * dx));
+  return { x: mx, y: my, dx, dy, nx: -dy, ny: dx, maxRes };
+}
+
+// Acha trechos curtos de curvatura alta cujo raio é ~3 mm (entre rMin e rMax) e os troca por um
+// arco de FILETE de raio rSnap, tangente às duas retas vizinhas (ajustadas nos trechos retos de
+// cada lado). Se as retas forem paralelas (ponta de dedo/orelha), o arco é o semicírculo entre
+// elas. Sem retas boas dos dois lados, cai num arco ajustado direto ao trecho curvo.
+// Retorna { q (reamostrado e girado), arcs: [{ s, e, S, E, bulge }] }.
+function detectArcs(base, rSnap, rMin, rMax, orient) {
+  const ds = 0.4, K = 4;
+  let q = resampleClosed(base, ds);
+  const m = q.length;
+  const turnAt = (i) => {
+    const a = q[(i - K + m) % m], b = q[i], c = q[(i + K) % m];
+    const v1x = b.x - a.x, v1y = b.y - a.y, v2x = c.x - b.x, v2y = c.y - b.y;
+    return Math.atan2(v1x * v2y - v1y * v2x, v1x * v2x + v1y * v2y);
+  };
+  let flag = new Uint8Array(m);
+  const lim = (22 * Math.PI) / 180;
+  for (let i = 0; i < m; i++) if (Math.abs(turnAt(i)) > lim) flag[i] = 1;
+  for (let i = 0; i < m; i++) { // fecha vãos de até 2 pontos
+    if (flag[i]) continue;
+    let a = 1; while (a <= 2 && !flag[(i - a + m) % m]) a++;
+    let b = 1; while (b <= 2 && !flag[(i + b) % m]) b++;
+    if (a <= 2 && b <= 2) flag[i] = 2;
+  }
+  for (let i = 0; i < m; i++) if (flag[i] === 2) flag[i] = 1;
+  // gira pra que o índice 0 fique no MEIO do maior trecho sem curva (nenhum arco cruza o início)
+  let bestStart = -1, bestLen = 0;
+  for (let i = 0; i < m; i++) {
+    if (flag[i] || flag[(i - 1 + m) % m] === 0) continue; // só começos de trecho sem curva
+    let len = 0;
+    while (len < m && !flag[(i + len) % m]) len++;
+    if (len > bestLen) { bestLen = len; bestStart = i; }
+  }
+  if (bestStart < 0) return { q, arcs: [] };
+  const rot = (bestStart + Math.floor(bestLen / 2)) % m;
+  q = q.slice(rot).concat(q.slice(0, rot));
+  flag = Array.from(flag.slice(rot)).concat(Array.from(flag.slice(0, rot)));
+
+  const arcs = [];
+  const TWO = Math.PI * 2;
+  let i = 0;
+  while (i < m) {
+    if (!flag[i]) { i++; continue; }
+    let e = i;
+    while (e + 1 < m && flag[e + 1]) e++;
+    const n = e - i + 1;
+    const s0 = i; i = e + 1;
+    if (n * ds > 16 || n < 3) continue;
+    if (s0 < 3 || e > m - 4) continue;
+    const seg = q.slice(s0 - 1, e + 2);
+    const c = fitCircleXY(seg);
+    if (!c || c.r < rMin || c.r > rMax || c.maxRes > 0.45) continue;
+    let phi = 0;
+    for (let k = s0; k <= e; k++) {
+      const a = q[k - 1], b = q[k], d = q[k + 1];
+      phi += Math.atan2((b.x - a.x) * (d.y - b.y) - (b.y - a.y) * (d.x - b.x), (b.x - a.x) * (d.x - b.x) + (b.y - a.y) * (d.y - b.y));
+    }
+    if (Math.abs(phi) < (25 * Math.PI) / 180 || Math.abs(phi) > (200 * Math.PI) / 180) continue;
+    // arco côncavo (sentido oposto ao do contorno): o desfoque arredonda quina viva, então exige
+    // um ajuste mais rigoroso (raio entre 2,7 e 3,5 mm e resíduo menor) pra não inventar raio
+    if (orient && Math.sign(phi) !== orient && (c.r < 2.7 || c.r > 3.5 || c.maxRes > 0.3)) continue;
+
+    // retas vizinhas: pontos retos antes e depois do trecho (até ~7 mm, parando em outra curva)
+    const before = [], after = [];
+    for (let k = s0 - 3; k >= 0 && !flag[k] && before.length < 18; k--) before.push(q[k]);
+    for (let k = e + 3; k < m && !flag[k] && after.length < 18; k++) after.push(q[k]);
+    let S = null, E = null, ctr = null, rad = rSnap;
+    if (before.length >= 8 && after.length >= 8) {
+      const L1 = fitLineXY(before), L2 = fitLineXY(after);
+      if (L1.maxRes <= 0.35 && L2.maxRes <= 0.35) {
+        const cross = Math.abs(L1.dx * L2.dy - L1.dy * L2.dx);
+        const s1 = (c.cx - L1.x) * L1.nx + (c.cy - L1.y) * L1.ny;
+        const s2 = (c.cx - L2.x) * L2.nx + (c.cy - L2.y) * L2.ny;
+        if (cross < Math.sin((8 * Math.PI) / 180)) {
+          // paralelas: semicírculo entre elas (largura deve dar ~2R)
+          const dd = Math.abs((L2.x - L1.x) * L1.nx + (L2.y - L1.y) * L1.ny);
+          if (Math.abs(dd / 2 - rSnap) <= 0.8) {
+            const target = ((L2.x - L1.x) * L1.nx + (L2.y - L1.y) * L1.ny) / 2;
+            ctr = { x: c.cx + L1.nx * (target - s1), y: c.cy + L1.ny * (target - s1) };
+            rad = dd / 2;
+          }
+        } else {
+          // filete de raio rSnap: centro no cruzamento das retas deslocadas rSnap pro lado do centro
+          const o1 = Math.sign(s1) * rSnap, o2 = Math.sign(s2) * rSnap;
+          const p1 = { x: L1.x + L1.nx * o1, y: L1.y + L1.ny * o1 }, p2 = { x: L2.x + L2.nx * o2, y: L2.y + L2.ny * o2 };
+          const det = L1.dx * L2.dy - L1.dy * L2.dx;
+          const t = ((p2.x - p1.x) * L2.dy - (p2.y - p1.y) * L2.dx) / det;
+          const cc = { x: p1.x + L1.dx * t, y: p1.y + L1.dy * t };
+          if (Math.hypot(cc.x - c.cx, cc.y - c.cy) <= 2.5) { ctr = cc; rad = rSnap; }
+        }
+        if (ctr) {
+          const f1 = (ctr.x - L1.x) * L1.dx + (ctr.y - L1.y) * L1.dy, f2 = (ctr.x - L2.x) * L2.dx + (ctr.y - L2.y) * L2.dy;
+          S = { x: L1.x + L1.dx * f1, y: L1.y + L1.dy * f1 };
+          E = { x: L2.x + L2.dx * f2, y: L2.y + L2.dy * f2 };
+        }
+      }
+    }
+    if (!S) { // sem retas boas: arco ajustado direto ao trecho curvo
+      ctr = { x: c.cx, y: c.cy }; rad = rSnap;
+      const proj = (p) => { const dx = p.x - c.cx, dy = p.y - c.cy, L = Math.hypot(dx, dy) || 1; return { x: c.cx + (dx / L) * rSnap, y: c.cy + (dy / L) * rSnap }; };
+      S = proj(q[s0]); E = proj(q[e]);
+    }
+    let d = Math.atan2(E.y - ctr.y, E.x - ctr.x) - Math.atan2(S.y - ctr.y, S.x - ctr.x);
+    if (phi > 0) d = ((d % TWO) + TWO) % TWO; else d = -((((-d) % TWO) + TWO) % TWO);
+    // pontos do caminho entre as extremidades: devem ficar dentro do trecho (s0-6 .. e+6)
+    arcs.push({ s: Math.max(1, s0 - 3), e: Math.min(m - 2, e + 3), S, E, bulge: Math.tan(d / 4) });
+  }
+  return { q, arcs };
+}
+
+// pontos densos de um contorno com arcos (pra área, desenho e dimensões)
+function expandLoop(pts, perArc) {
+  const out = [];
+  const n = pts.length;
+  const steps = perArc || 12;
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % n];
+    out.push({ x: p0.x, y: p0.y });
+    if (!p0.bulge) continue;
+    const b = p0.bulge, dx = p1.x - p0.x, dy = p1.y - p0.y, c = Math.hypot(dx, dy) || 1e-9;
+    const h = (c / 2) * ((1 - b * b) / (2 * b));
+    const cx = (p0.x + p1.x) / 2 + (-dy / c) * h, cy = (p0.y + p1.y) / 2 + (dx / c) * h;
+    const a0 = Math.atan2(p0.y - cy, p0.x - cx), sweep = 4 * Math.atan(b), r = Math.hypot(p0.x - cx, p0.y - cy);
+    for (let k = 1; k < steps; k++) out.push({ x: cx + r * Math.cos(a0 + (sweep * k) / steps), y: cy + r * Math.sin(a0 + (sweep * k) / steps) });
+  }
+  return out;
+}
+
 function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
   opts = opts || {};
   const N = w * h;
@@ -1401,17 +1586,18 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
   // duas retas LONGAS (>=12 mm) se encontram por um trecho curto (<=8 mm total), o trecho é
   // trocado pelo ponto onde as retas se cruzam — se esse ponto estiver perto do trecho (<=6 mm).
   // Retângulo vira 4 nós e o canto deixa de ser arredondado.
-  const sharpenCorners = (pts) => {
+  const sharpenCorners = (pts, open) => {
     const n = pts.length;
     if (n < 5) return pts;
     const seg = (i) => ({ a: pts[i], b: pts[(i + 1) % n], len: Math.hypot(pts[(i + 1) % n].x - pts[i].x, pts[(i + 1) % n].y - pts[i].y) });
     const LONG = 12, SHORT_TOTAL = 8, NEAR = 6;
     const longIdx = [];
-    for (let i = 0; i < n; i++) if (seg(i).len >= LONG) longIdx.push(i);
+    for (let i = 0; i < (open ? n - 1 : n); i++) if (seg(i).len >= LONG) longIdx.push(i);
     if (longIdx.length < 2) return pts;
     const replace = new Map(); // índice do 1º vértice do trecho -> { count, point }
     const skip = new Set();
     for (let k = 0; k < longIdx.length; k++) {
+      if (open && k === longIdx.length - 1) continue;
       const ia = longIdx[k], ib = longIdx[(k + 1) % longIdx.length];
       if (ia === ib) continue;
       // trecho curto entre o fim do segmento ia e o início do segmento ib: vértices ia+1 .. ib
@@ -1448,13 +1634,33 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
         const c = fitCircle(raw);
         if (c && c.maxRes <= 0.35) circle = { cx: c.cx, cy: c.cy, r: c.r };
       }
-      return { pts: sharpenCorners(simplifyClosed(smoothKeepCorners(raw))), area, per, circle };
+      const base = smoothKeepCorners(raw);
+      const det = detectArcs(base, 3, 2.3, 3.9, Math.sign(signedArea(raw)));
+      let pts;
+      if (!det.arcs.length) {
+        pts = sharpenCorners(simplifyClosed(base), false);
+      } else {
+        // arcos de R=3 + cadeias retas/curvas entre eles (simplificadas e com canto vivo)
+        const q = det.q, m = q.length;
+        pts = [];
+        for (let j = 0; j < det.arcs.length; j++) {
+          const a = det.arcs[j], nx = det.arcs[(j + 1) % det.arcs.length];
+          pts.push({ x: a.S.x, y: a.S.y, bulge: a.bulge });
+          const chain = [a.E];
+          let idx = (a.e + 1) % m;
+          while (idx !== nx.s) { chain.push(q[idx]); idx = (idx + 1) % m; if (chain.length > m) break; }
+          chain.push(nx.S);
+          const simp = sharpenCorners(dpSimplify(chain, TOL), true);
+          for (let t = 0; t < simp.length - 1; t++) pts.push({ x: simp[t].x, y: simp[t].y });
+        }
+      }
+      return { pts, area, per, circle };
     }).filter((l) => l.pts.length >= 3 && ((l.area >= 50 && l.per >= 30) || l.circle));
     if (!cand.length) return null;
     return cand.map((l, i) => {
       let depth = 0;
       cand.forEach((other, j) => { if (j !== i && inside(l.pts[0], other.pts)) depth++; });
-      return { pts: l.pts, circle: l.circle, hole: depth % 2 === 1, areaMm2: Math.abs(signedArea(l.pts)), perimeterMm: perim(l.pts) };
+      return { pts: l.pts, circle: l.circle, hole: depth % 2 === 1, areaMm2: l.area, perimeterMm: l.per };
     });
   };
   const loops = finishLoops(traceLoops(f));
@@ -1522,7 +1728,7 @@ function vectorizePiece(data, w, h, pxPerMm, profile, opts) {
 
   const outer = loops.filter((l) => !l.hole);
   let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
-  for (const l of outer) for (const p of l.pts) { bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y); bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y); }
+  for (const l of outer) for (const p of expandLoop(l.pts)) { bx0 = Math.min(bx0, p.x); by0 = Math.min(by0, p.y); bx1 = Math.max(bx1, p.x); by1 = Math.max(by1, p.y); }
   return {
     loops,
     silhouette,
@@ -1839,7 +2045,7 @@ function vectorToDXF(vec, matHeightMm) {
       continue;
     }
     add(0, "POLYLINE"); add(8, layer); add(66, 1); add(70, 1);
-    for (const p of l.pts) { add(0, "VERTEX"); add(8, layer); add(10, p.x.toFixed(3)); add(20, (matHeightMm - p.y).toFixed(3)); add(30, "0.0"); }
+    for (const p of l.pts) { add(0, "VERTEX"); add(8, layer); add(10, p.x.toFixed(3)); add(20, (matHeightMm - p.y).toFixed(3)); add(30, "0.0"); if (p.bulge) add(42, (-p.bulge).toFixed(6)); }
     add(0, "SEQEND"); add(8, layer);
   }
   for (const ln of (vec.lines || [])) {
@@ -1853,7 +2059,20 @@ function vectorToDXF(vec, matHeightMm) {
 
 // SVG em mm (mesma orientação da imagem, Y pra baixo).
 function vectorToSVG(vec, matWidthMm, matHeightMm) {
-  const path = (pts, close) => "M" + pts.map((p) => p.x.toFixed(3) + " " + p.y.toFixed(3)).join(" L") + (close ? " Z" : "");
+  const path = (pts, close) => {
+    let d = "M" + pts[0].x.toFixed(3) + " " + pts[0].y.toFixed(3);
+    const n = pts.length;
+    const last = close ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const p0 = pts[i], p1 = pts[(i + 1) % n];
+      if (p0.bulge) {
+        const sweep = 4 * Math.atan(p0.bulge), c = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+        const r = Math.abs(c / (2 * Math.sin(sweep / 2)));
+        d += " A" + r.toFixed(3) + " " + r.toFixed(3) + " 0 " + (Math.abs(sweep) > Math.PI ? 1 : 0) + " " + (sweep > 0 ? 1 : 0) + " " + p1.x.toFixed(3) + " " + p1.y.toFixed(3);
+      } else d += " L" + p1.x.toFixed(3) + " " + p1.y.toFixed(3);
+    }
+    return d + (close ? " Z" : "");
+  };
   const out = [];
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
   out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + matWidthMm.toFixed(1) + 'mm" height="' + matHeightMm.toFixed(1) + 'mm" viewBox="0 0 ' + matWidthMm.toFixed(3) + " " + matHeightMm.toFixed(3) + '">');
@@ -2451,7 +2670,7 @@ function drawVectorOverlay(view, pxPerMm) {
     if (l.circle) {
       ctx.arc(X(l.circle.cx), X(l.circle.cy), l.circle.r * pxPerMm, 0, Math.PI * 2);
     } else {
-      l.pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), X(p.y)) : ctx.moveTo(X(p.x), X(p.y))));
+      expandLoop(l.pts, 10).forEach((p, i) => (i ? ctx.lineTo(X(p.x), X(p.y)) : ctx.moveTo(X(p.x), X(p.y))));
       ctx.closePath();
     }
     ctx.stroke();
@@ -2511,13 +2730,15 @@ function buildVectorView(holder) {
   const outer = loops.filter((l) => !l.hole);
   const holes = loops.length - outer.length;
   const nodes = loops.reduce((a, l) => a + (l.circle ? 1 : l.pts.length), 0) + view.lines.reduce((a, l) => a + l.pts.length, 0);
+  const arcCount = loops.reduce((a, l) => a + (l.circle ? 0 : l.pts.filter((p) => p.bulge).length), 0);
   const dims = outer.slice(0, 8).map((l, i) => {
-    const xs = l.pts.map((p) => p.x), ys = l.pts.map((p) => p.y);
+    const dense = expandLoop(l.pts, 10);
+    const xs = dense.map((p) => p.x), ys = dense.map((p) => p.y);
     return "Peça " + (i + 1) + ": " + fmt(Math.max(...xs) - Math.min(...xs)) + " x " + fmt(Math.max(...ys) - Math.min(...ys)) + " mm";
   });
   vectorInfo.textContent =
     outer.length + " peça(s), uma linha fechada cada" + (holes ? ", " + holes + " furo(s)" : "") +
-    (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
+    (arcCount ? ", " + arcCount + " arco(s) R3" : "") + (view.lines.length ? ", " + view.lines.length + " linha(s) de caneta" : "") + " · " + nodes + " nós no total\n" +
     dims.join("\n") + "\nConfira o desenho verde sobre a imagem antes de mandar cortar.";
   vectorActions.classList.remove("hidden");
 }
