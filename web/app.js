@@ -20,7 +20,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-09.13";
+const APP_VERSION = "2026-10-13.1";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -3632,6 +3632,110 @@ btnBatchClear.addEventListener("click", async () => {
   for (const b of batch) URL.revokeObjectURL(b.thumbUrl);
   batch = [];
   renderBatch();
+});
+
+
+/* ------------------------------------------------------------------ *
+ * Enviar por e-mail
+ * O app é 100% local (sem servidor), então o e-mail sai pelo app de e-mail do aparelho:
+ *  1) celular: abre o compartilhamento com o .zip (escolha Gmail/Outlook); o endereço é copiado
+ *     pra colar em "Para" (o navegador não deixa preencher o destinatário nem o anexo ao mesmo tempo);
+ *  2) computador: baixa o .zip e abre o e-mail já endereçado e com o assunto — é só anexar o arquivo.
+ * ------------------------------------------------------------------ */
+
+const EMAIL_KEY = "moldeflat_email_to";
+const btnEmail = el("btnEmail");
+const btnBatchEmail = el("btnBatchEmail");
+const emailTo = el("emailTo");
+const emailBatchTo = el("emailBatchTo");
+const emailStatus = el("emailStatus");
+const emailBatchStatus = el("emailBatchStatus");
+
+try { const saved = localStorage.getItem(EMAIL_KEY); if (saved) emailTo.value = emailBatchTo.value = saved; } catch (e) { /* sem memória */ }
+for (const inp of [emailTo, emailBatchTo]) {
+  inp.addEventListener("input", () => {
+    for (const o of [emailTo, emailBatchTo]) if (o !== inp) o.value = inp.value;
+    try { localStorage.setItem(EMAIL_KEY, inp.value.trim()); } catch (e) { /* ok */ }
+  });
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// items: [{ name, blob, dxf, svg, errPct }]
+async function sendByEmail(items, input, statusEl, buttons) {
+  const say = (t) => { statusEl.textContent = t; };
+  const to = input.value.split(/[,;\s]+/).filter(Boolean);
+  const bad = to.find((a) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a));
+  if (bad) { say("O endereço \"" + bad + "\" não parece um e-mail válido."); input.focus(); return; }
+  if (!items.length) return;
+  buttons.forEach((b) => { b.disabled = true; });
+  try {
+    say("Preparando os arquivos…");
+    const files = [];
+    for (const it of items) {
+      files.push({ name: it.name, blob: it.blob });
+      const base = it.name.replace(/\.png$/, "");
+      if (it.dxf) files.push({ name: base + ".dxf", blob: new Blob([it.dxf]) });
+      if (it.svg) files.push({ name: base + ".svg", blob: new Blob([it.svg]) });
+    }
+    const zip = await buildZip(files);
+    const zipName = "moldes_" + fileStamp(new Date()) + ".zip";
+    const file = new File([zip], zipName, { type: "application/zip" });
+    const dateStr = new Date().toLocaleDateString("pt-BR");
+    const subject = "Moldes digitalizados (" + items.length + ") - " + dateStr;
+    const lines = items.map((it) => "- " + it.name + (it.errPct != null ? " (erro estimado " + it.errPct.toFixed(2).replace(".", ",") + "%)" : ""));
+    const body = "Moldes digitalizados pelo MoldeFlat em " + dateStr + ".\n\nFotos (" + items.length + "):\n" + lines.join("\n") +
+      "\n\nNo anexo (" + zipName + "): imagem corrigida (PNG)" + (items.some((i) => i.dxf) ? ", DXF e SVG em mm reais." : ".");
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      let copied = false;
+      if (to.length && navigator.clipboard && navigator.clipboard.writeText) {
+        try { await navigator.clipboard.writeText(to.join(", ")); copied = true; } catch (e) { /* sem área de transferência */ }
+      }
+      try {
+        await navigator.share({ files: [file], title: subject, text: body });
+        say(to.length ? "Destinatário: " + to.join(", ") + (copied ? " (copiado — cole em \"Para\" se estiver vazio)." : ".") : "");
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") { say(""); return; }
+        if (e && e.name === "NotAllowedError") { say("O aparelho pediu um novo toque. Toque em enviar de novo."); return; }
+        // outro erro: cai pro caminho de baixar + abrir o e-mail
+      }
+    }
+    triggerDownload(zip, zipName);
+    const href = "mailto:" + to.map(encodeURIComponent).join(",") + "?subject=" + encodeURIComponent(subject) +
+      "&body=" + encodeURIComponent(body + "\n\n(Anexe o arquivo " + zipName + " que acabou de ser baixado.)");
+    say("Baixei o arquivo " + zipName + ". Abrindo o seu e-mail — anexe esse arquivo e envie.");
+    setTimeout(() => { window.location.href = href; }, 700);
+  } catch (e) {
+    say("Não foi possível preparar o e-mail: " + (e && e.message ? e.message : e));
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+btnEmail.addEventListener("click", async () => {
+  const r = currentResult;
+  if (!r) return;
+  emailStatus.textContent = "Preparando os arquivos…";
+  if (r.vectorPromise) { try { await r.vectorPromise; } catch (e) { /* segue sem vetor */ } }
+  const blob = await new Promise((res) => r.canvas.toBlob(res, "image/png"));
+  const item = {
+    name: "molde_" + fileStamp(new Date()) + ".png", blob, errPct: r.errPct,
+    dxf: r.vector ? r.vector.dxf : null, svg: r.vector ? r.vector.svg : null,
+  };
+  await sendByEmail([item], emailTo, emailStatus, [btnEmail]);
+});
+
+btnBatchEmail.addEventListener("click", () => {
+  sendByEmail(batch.map((b) => ({ name: b.name, blob: b.blob, errPct: b.errPct, dxf: b.dxf, svg: b.svg })), emailBatchTo, emailBatchStatus, [btnBatchEmail]);
 });
 
 /* ZIP-BEGIN — gerador de .zip simples (sem compressão: PNG já é comprimido) */

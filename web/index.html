@@ -160,6 +160,15 @@
       <button id="btnRetry" class="btn btn-ghost">Refazer esta foto</button>
     </div>
 
+    <div class="email-box">
+      <label class="email-label" for="emailTo">Enviar esta foto por e-mail (PNG + DXF + SVG num .zip)</label>
+      <div class="email-row">
+        <input id="emailTo" class="email-input" type="text" inputmode="email" autocomplete="email" placeholder="e-mail de destino (opcional)" />
+        <button id="btnEmail" class="btn btn-primary">✉ Enviar por e-mail</button>
+      </div>
+      <p id="emailStatus" class="hint email-status"></p>
+    </div>
+
     <div class="more-question">
       <h3>Tem mais moldes para fotografar?</h3>
       <div class="result-actions">
@@ -178,11 +187,17 @@
     </div>
     <div id="batchList" class="batch-list"></div>
     <div class="result-actions">
-      <button id="btnBatchShare" class="btn btn-primary">Compartilhar todas</button>
+      <button id="btnBatchEmail" class="btn btn-primary">✉ Enviar todas por e-mail</button>
+      <button id="btnBatchShare" class="btn btn-secondary">Compartilhar todas</button>
       <button id="btnBatchZip" class="btn btn-secondary">Baixar todas (.zip)</button>
       <button id="btnBatchShareZip" class="btn btn-secondary">Compartilhar .zip</button>
       <button id="btnBatchMore" class="btn btn-secondary">Fotografar outro molde</button>
       <button id="btnBatchClear" class="btn btn-ghost">Apagar tudo</button>
+    </div>
+    <div class="email-box">
+      <label class="email-label" for="emailBatchTo">E-mail de destino (o mesmo é lembrado nas duas telas)</label>
+      <input id="emailBatchTo" class="email-input" type="text" inputmode="email" autocomplete="email" placeholder="e-mail de destino (opcional)" />
+      <p id="emailBatchStatus" class="hint email-status"></p>
     </div>
   </section>
 
@@ -190,15 +205,15 @@
 
 <footer class="footer">
   <p>100% local no navegador — nenhuma foto é enviada a servidor algum.</p>
-  <p>versão 2026-10-09.13</p>
+  <p>versão 2026-10-13.1</p>
 </footer>
 
 </div>
 
-<script src="lib/cv.js?v=2026-10-09.13"></script>
-<script src="lib/aruco.js?v=2026-10-09.13"></script>
-<script src="lib/ribbon.js?v=2026-10-09.13"></script>
-<script src="app.js?v=2026-10-09.13"></script>
-<script src="auth.js?v=2026-10-09.13"></script>
+<script src="lib/cv.js?v=2026-10-13.1"></script>
+<script src="lib/aruco.js?v=2026-10-13.1"></script>
+<script src="lib/ribbon.js?v=2026-10-13.1"></script>
+<script src="app.js?v=2026-10-13.1"></script>
+<script src="auth.js?v=2026-10-13.1"></script>
 </body>
 </html>

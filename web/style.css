@@ -486,3 +486,23 @@ body.camera-mode .camera-actions {
 @media (min-width: 480px) {
   .step { padding: 22px; }
 }
+
+/* ---------- Envio por e-mail ---------- */
+.email-box { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.email-label { display: block; font-size: 0.9rem; font-weight: 600; margin-bottom: 8px; }
+.email-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: stretch; }
+.email-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  width: 100%;
+  font-size: 1rem;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.email-row .email-input { width: auto; }
+.email-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.email-status { white-space: pre-line; }
+.email-status:empty { display: none; }
