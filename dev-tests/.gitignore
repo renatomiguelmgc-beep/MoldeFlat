@@ -1,0 +1,5 @@
+vector_block.js
+*.dxf
+*.svg
+*.jpg
+*_gt.json

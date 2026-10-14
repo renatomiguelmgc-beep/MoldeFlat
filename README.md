@@ -8,8 +8,14 @@ fotografa um molde de peça de carro traçado em cartolina/papelão sobre um
 - em escala real conhecida (o desenhista sabe exatamente o tamanho real de
   cada pixel para vetorizar no AutoCAD).
 
-Todo o processamento roda **no navegador (client-side)**, sem backend, sem
-login, sem upload da foto para servidor nenhum.
+Todo o processamento roda **no navegador (client-side)**, sem backend e sem
+upload da foto para servidor nenhum. O acesso é protegido por **login por
+usuário** (Firebase Authentication, usuários criados à mão no console Firebase;
+ver `web/auth.js`). Além da imagem corrigida, o app **vetoriza o contorno das
+peças** em DXF/SVG (mm reais), com simetria automática e envio por e-mail/ZIP.
+
+> Estado atual do projeto, decisões e pendências: **`CLAUDE.md`**.
+> Levar para outra máquina / publicar no domínio da AllSets: **`MIGRACAO_ALLSETS.md`**.
 
 **Publicado em:** https://renatomiguelmgc-beep.github.io/MoldeFlat/
 (GitHub Pages, deploy automático a cada `git push` na branch `main` via
@@ -144,14 +150,12 @@ mesa real, não com o arquivo original.
 
 ## Limitações da v1 (por decisão, não por esquecimento)
 
-- **Sem vetorização automática**: a saída é uma imagem raster corrigida, não
-  um DXF/SVG do contorno do molde. O desenhista traça por cima no AutoCAD.
-  Ficou de fora da v1 porque bordas de papelão cortado à mão, recortes
-  internos e sombras tornam a extração automática de contorno arriscada
-  tecnicamente — fica para uma fase futura, com mais dado real pra testar.
-- **Sem histórico/persistência**: cada foto é processada e baixada na hora,
-  nada fica salvo (nem localmente, nem em servidor). Sem login, sem lista de
-  projetos.
+- **Vetorização automática** (adicionada depois da v1): gera DXF/SVG do
+  contorno, mas o desenhista deve **conferir o desenho verde sobre a imagem**
+  antes de mandar cortar. Linhas de caneta e janelas internas são opcionais.
+- **Fotos guardadas só no aparelho**: o lote da sessão fica no IndexedDB do
+  navegador (não vai pra servidor). Trocar o endereço do site ou limpar os
+  dados do navegador apaga esse lote — baixe/envie antes.
 
 ## Testes
 
