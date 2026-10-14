@@ -8,7 +8,7 @@ PWA estático (instalável no celular, GitHub Pages hoje; migrando para o domín
 Fotografa moldes de peças de carro traçados à mão em papel/papelão (cortados com tesoura, nunca perfeitos) sobre um **tapete de calibração preto impresso**
 (4 marcadores ArUco nos cantos + fita De Bruijn na borda), corrige perspectiva e escala (homografia + distorção da lente + `print_scale`),
 e **vetoriza o contorno** em DXF/SVG (mm reais) para o AutoCAD e o corte a laser CNC.
-Tudo roda no navegador. Login por usuário via Firebase Auth (REST, `web/auth.js`); usuários criados à mão no console Firebase.
+Tudo roda no navegador. Login por usuário via Firebase Auth (REST, `web/auth.js`); a chave do projeto fica só em `web/firebase-config.js`; usuários criados à mão no console Firebase. A migração está trocando para um projeto Firebase novo da empresa.
 
 Ordem dos scripts no `index.html` importa: `lib/cv.js`, `lib/aruco.js`, `lib/ribbon.js`, `app.js`, `auth.js`.
 

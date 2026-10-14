@@ -6,12 +6,10 @@
  * Console do Firebase) — isso é só um portão de acesso, não um sistema
  * de permissões por usuário.
  *
- * A apiKey abaixo é pública de propósito (é assim que o Firebase
- * funciona no navegador) — ela só identifica o projeto, quem entra ou
- * não depende do login em si, verificado pelo próprio Firebase.
+ * A chave do projeto (FIREBASE_API_KEY) fica em firebase-config.js,
+ * carregado antes deste arquivo. Ela é pública de propósito.
  * ------------------------------------------------------------------ */
 
-const FIREBASE_API_KEY = "AIzaSyCp6J90yeX6l4sYPkG7xUWD1XcJvbAmKBM";
 const AUTH_STORAGE_KEY = "moldeflat_auth_session";
 const REFRESH_MARGIN_MS = 5 * 60 * 1000; // renova se faltar menos de 5 min pro token expirar
 const REFRESH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -63,6 +61,9 @@ function friendlyError(code) {
 }
 
 async function signIn(email, password) {
+  if (typeof FIREBASE_API_KEY !== "string" || !/^AIza[\w-]{30,}$/.test(FIREBASE_API_KEY)) {
+    throw new Error("O login ainda não foi configurado: falta a chave do Firebase em firebase-config.js.");
+  }
   const res = await fetch(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
     {
