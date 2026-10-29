@@ -82,6 +82,34 @@
           "y_mm": 1120
         }
       ]
+    },
+    {
+      "id": "tapete_1000x1500_liso",
+      "nome": "100 x 150 cm (sem fita)",
+      "descricao": "4 marcadores nos cantos, SEM a fita pontilhada da borda. Menos precisão que o tapete com fita.",
+      "width_mm": 1000,
+      "height_mm": 1500,
+      "marker_size_mm": 100,
+      "margin_mm": 80,
+      "background": "black",
+      "markers": [
+        {
+          "id": 0,
+          "corner": "top-left"
+        },
+        {
+          "id": 1,
+          "corner": "top-right"
+        },
+        {
+          "id": 2,
+          "corner": "bottom-right"
+        },
+        {
+          "id": 3,
+          "corner": "bottom-left"
+        }
+      ]
     }
   ]
 }
