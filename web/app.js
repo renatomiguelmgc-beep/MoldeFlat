@@ -20,7 +20,7 @@
  * Configuração / estado
  * ------------------------------------------------------------------ */
 
-const APP_VERSION = "2026-10-29.1";
+const APP_VERSION = "2026-11-03.1";
 const DETECT_MAX_SIDE = 1400;   // 1a tentativa de detecção (rápida); se faltar marcador, tenta resoluções maiores
 const OUTPUT_TARGET_LONG = 2400; // lado maior da imagem retificada final (qualidade x tamanho de arquivo)
 const LEGEND_HEIGHT_MM = 25;     // faixa extra no rodapé da imagem final para a régua de escala
@@ -109,7 +109,7 @@ function updateProfileInfo() {
   const ps = currentProfile.nominal ? currentProfile.print_scale : null;
   profileInfo.textContent =
     `${p.width_mm / 10} x ${p.height_mm / 10} cm · ${p.markers.length} marcadores de ${p.marker_size_mm / 10} cm · ` +
-    (ps ? `escala de impressão medida: ${(ps.x * 100).toFixed(2).replace(".", ",")}% x ${(ps.y * 100).toFixed(2).replace(".", ",")}% · ` : "") +
+    (ps ? `escala de impressão ${ps.estimada ? "ESTIMADA (confirmar com trena)" : "medida"}: ${(ps.x * 100).toFixed(2).replace(".", ",")}% x ${(ps.y * 100).toFixed(2).replace(".", ",")}% · ` : "") +
     `precisa de pelo menos ${MIN_MARKERS_REQUIRED} visíveis para calibrar.` +
     (p.ribbon ? " Inclui fita de referência para maior precisão." : "") +
     (p.descricao ? ` ${p.descricao}` : "");

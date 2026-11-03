@@ -36,17 +36,28 @@
         }
       ],
       "print_scale": {
-        "x": 0.9798,
-        "y": 0.9724,
+        "x": 0.966,
+        "y": 0.972,
         "medido_trena_mm": {
-          "ID0_ID1": 823,
-          "ID0_ID3": 1303
+          "ID0_ID1": 811,
+          "ID0_ID3": 1302
         },
         "esperado_mm": {
           "ID0_ID1": 840,
           "ID0_ID3": 1340
         },
-        "data": "2026-10-09"
+        "data": "2026-11-03",
+        "observacao": "Quadro rígido fosco novo. ESTIMADO pelas fotos com trena (erro de leitura ~±3 mm): vertical 1302 mm medido borda-de-cima ID0 a borda-de-cima ID3; horizontal derivado. Confirmar com 2 medidas de trena (esquerda ID0 a esquerda ID1 = 840 x escala; cima ID0 a cima ID3 = 1340 x escala).",
+        "anterior": {
+          "x": 0.9798,
+          "y": 0.9724,
+          "data": "2026-10-09",
+          "medido_trena_mm": {
+            "ID0_ID1": 823,
+            "ID0_ID3": 1303
+          }
+        },
+        "estimada": true
       }
     },
     {
