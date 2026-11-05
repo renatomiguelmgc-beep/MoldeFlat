@@ -38,6 +38,13 @@ Ordem dos scripts no `index.html` importa: `lib/cv.js`, `lib/aruco.js`, `lib/rib
 - **Simetria**: o molde é feito à mão, então o app acha o eixo e impõe simetria exata (metade espelhada). Só aplica se a peça for ≥ 90% simétrica e a correção ≤ 5 mm; senão avisa ("detalhe só de um lado") e mantém. Opções: automática / 2º eixo / forçar / desligada.
 - Envio por e-mail: compartilha o .zip pelo app de e-mail do celular; fallback baixa o zip e abre `mailto:`. Sem servidor.
 
+## Impressão do quadro (decidido em 05/11/2026)
+- Quadro físico: rígido, fosco, **1000 x 1500 mm**, fundo preto, **com a fita** (a fita dá a precisão de 1 mm). Só a linha pontilhada de dobra/corte foi removida.
+- Arquivo para a gráfica: `node generate_mat.js tapete_1000x1500_fita --sangria=10` → página **1020 x 1520 mm** (10 mm de folga por lado), PDF via PyMuPDF (`fitz`/`pymupdf`: `open(svg).convert_to_pdf()`). Linha pontilhada só com `--guia`.
+- A gráfica **não pode alterar o arquivo** (escala 100%, sem "ajustar à página", sem etiquetas): a impressão anterior foi mexida (tile 101 mm, célula da fita 25 mm, mas distâncias entre marcadores ~3,5% menores) e a calibração pela fita fica inválida assim.
+- Conferir o quadro impresso com trena (mesma borda do quadrado branco): ID0→ID1 = 840 mm, ID0→ID3 = 1340 mm. Se não bater, gravar `print_scale` no perfil (hoje o perfil 100x150 está no tamanho nominal, sem `print_scale`).
+- Perfil `teste_quadro_atual` = quadro impresso errado (só 4 marcadores, 811 x 1302 mm), só para testes; remover quando o quadro novo for validado.
+
 ## Pendências
 
 - O botão de baixar DXF sumiu no celular de um usuário (não reproduzido; há faixa de erro na tela e vetorização com fallback sem arcos).
