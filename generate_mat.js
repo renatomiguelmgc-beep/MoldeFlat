@@ -1,6 +1,12 @@
 // Gera o SVG de impressão do tapete de calibração (marcadores ArUco nos 4 cantos).
-// Uso: node generate_mat.js <profileId>
+// Uso: node generate_mat.js <profileId> [--sangria=N] [--guia]
 // Ex.:  node generate_mat.js padrao_1000x700
+//       node generate_mat.js tapete_1000x1500_fita --sangria=10
+//
+//   --sangria=N  folga (sangria) de N mm em cada lado, pedida pela gráfica: a página fica
+//                (largura + 2N) x (altura + 2N) e o fundo preto se estende até a borda;
+//                o desenho (marcadores, fita) não muda de posição em relação ao tapete.
+//   --guia       desenha a linha pontilhada de guia ao redor (por padrão NÃO desenha).
 //
 // O SVG resultante usa unidades em milímetros (width/height/viewBox em "mm"),
 // então deve ser aberto e plotado em escala 100% (sem "ajustar à página") em
@@ -15,6 +21,14 @@ const profilesPath = path.join(__dirname, "web", "mat-profiles.json");
 const config = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
 
 const profileId = process.argv[2];
+const flags = process.argv.slice(3);
+const sangriaArg = flags.find((a) => a.startsWith("--sangria="));
+const sangria = sangriaArg ? Number(sangriaArg.split("=")[1]) : 0;
+if (!Number.isFinite(sangria) || sangria < 0 || sangria > 100) {
+  console.error("--sangria precisa ser um número de 0 a 100 (mm por lado).");
+  process.exit(1);
+}
+const comGuia = flags.includes("--guia");
 if (!profileId) {
   console.error("Uso: node generate_mat.js <profileId>");
   console.error("Perfis disponíveis:", config.profiles.map((p) => p.id).join(", "));
@@ -135,24 +149,34 @@ const footerBlocks = `
         font-size="${subFontSize}" text-anchor="middle" fill="${subColor}">imprimir em escala 100%</text>
 `;
 
+const pageW = width_mm + 2 * sangria;
+const pageH = height_mm + 2 * sangria;
+const guia = comGuia
+  ? `<rect x="1" y="1" width="${width_mm - 2}" height="${height_mm - 2}" fill="none"
+        stroke="${borderStroke}" stroke-width="1" stroke-dasharray="6 4" />`
+  : "";
+
 const svgDoc = `<?xml version="1.0" encoding="UTF-8"?>
 <!-- Tapete de calibração "${profile.nome}" (perfil "${profile.id}").
      IMPRIMIR/PLOTAR EM ESCALA 100% - NÃO AJUSTAR À PÁGINA.
-     Dimensões reais: ${width_mm} x ${height_mm} mm. -->
-<svg xmlns="http://www.w3.org/2000/svg" width="${width_mm}mm" height="${height_mm}mm"
-     viewBox="0 0 ${width_mm} ${height_mm}">
+     Tapete: ${width_mm} x ${height_mm} mm.${sangria ? ` Página com sangria de ${sangria} mm por lado: ${pageW} x ${pageH} mm; o tapete fica no centro.` : ""} -->
+<svg xmlns="http://www.w3.org/2000/svg" width="${pageW}mm" height="${pageH}mm"
+     viewBox="0 0 ${pageW} ${pageH}">
+  <rect x="0" y="0" width="${pageW}" height="${pageH}" fill="${bgFill}" />
+  <g transform="translate(${sangria} ${sangria})">
   <rect x="0" y="0" width="${width_mm}" height="${height_mm}" fill="${bgFill}" />
-  <rect x="1" y="1" width="${width_mm - 2}" height="${height_mm - 2}" fill="none"
-        stroke="${borderStroke}" stroke-width="1" stroke-dasharray="6 4" />
+  ${guia}
   ${ribbonGroup}
   ${markerGroups}
   ${footerBlocks}
+  </g>
 </svg>
 `;
 
 const outDir = path.join(__dirname, "web", "mats");
 fs.mkdirSync(outDir, { recursive: true });
-const outPath = path.join(outDir, `${profile.id}.svg`);
+const outPath = path.join(outDir, `${profile.id}${sangria ? `_sangria${sangria}` : ""}.svg`);
 fs.writeFileSync(outPath, svgDoc, "utf8");
 console.log("Gerado:", outPath);
-console.log(`Tamanho real: ${width_mm} x ${height_mm} mm — lembrar de plotar em escala 100%.`);
+console.log(`Tamanho real do tapete: ${width_mm} x ${height_mm} mm — lembrar de plotar em escala 100%.`);
+if (sangria) console.log(`Página com sangria: ${pageW} x ${pageH} mm (${sangria} mm de folga por lado).`);

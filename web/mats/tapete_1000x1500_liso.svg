@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Tapete de calibração "100 x 150 cm (sem fita)" (perfil "tapete_1000x1500_liso").
      IMPRIMIR/PLOTAR EM ESCALA 100% - NÃO AJUSTAR À PÁGINA.
-     Dimensões reais: 1000 x 1500 mm. -->
+     Tapete: 1000 x 1500 mm. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1000mm" height="1500mm"
      viewBox="0 0 1000 1500">
   <rect x="0" y="0" width="1000" height="1500" fill="#0a0a0a" />
-  <rect x="1" y="1" width="998" height="1498" fill="none"
-        stroke="#555555" stroke-width="1" stroke-dasharray="6 4" />
+  <g transform="translate(0 0)">
+  <rect x="0" y="0" width="1000" height="1500" fill="#0a0a0a" />
+  
   
   
   <g transform="translate(30 30) scale(10)">
@@ -48,4 +49,5 @@
   <text x="500" y="784.9" font-family="Arial"
         font-size="7" text-anchor="middle" fill="#aaaaaa">imprimir em escala 100%</text>
 
+  </g>
 </svg>
